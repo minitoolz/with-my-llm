@@ -138,7 +138,7 @@ async fn launch(
     let discovered_models = if model.is_none() {
         tokio::select! {
             result = bridge.model_ids() => result?,
-            error = access.wait_for_failure() => bail!("{error}"),
+            error = access.supervise(&bridge) => bail!("{error}"),
             _ = terminate.recv() => return Ok(143),
             _ = interrupt.recv() => return Ok(130),
         }
@@ -165,7 +165,7 @@ async fn launch(
         })?;
     let status = tokio::select! {
         status = child.wait() => status?,
-        error = access.wait_for_failure() => {
+        error = access.supervise(&bridge) => {
             child.shutdown(libc::SIGTERM).await;
             bail!("{error}");
         }

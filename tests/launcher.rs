@@ -110,6 +110,46 @@ fn preserves_agent_status_and_cleans_access() {
 }
 
 #[test]
+fn persistent_access_restarts_until_agent_exits() {
+    for exit_code in [0, 7] {
+        let (directory, mut command, _listener) = fixture(
+            "touch \"$AGENT_READY\"\n\
+             attempts=0\n\
+             while [ ! -f \"$ACCESS_STARTS\" ] || [ \"$(wc -c < \"$ACCESS_STARTS\")\" -lt 3 ]; do\n\
+               attempts=$((attempts + 1))\n\
+               if [ \"$attempts\" -ge 150 ]; then exit 99; fi\n\
+               sleep 0.05\n\
+             done\n\
+             exit 23",
+            &format!(
+                "printf x >> \"$ACCESS_STARTS\"\n\
+                 while [ ! -f \"$AGENT_READY\" ]; do sleep 0.05; done\n\
+                 exit {exit_code}"
+            ),
+            true,
+        );
+        let starts = directory.path().join("access-starts");
+        command
+            .env("ACCESS_STARTS", &starts)
+            .env("AGENT_READY", directory.path().join("agent-ready"));
+        let output = command.output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(23),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read_to_string(&starts).unwrap(), "xxx");
+        std::thread::sleep(Duration::from_millis(1100));
+        assert_eq!(fs::read_to_string(&starts).unwrap(), "xxx");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("cleanup")).unwrap(),
+            "cleaned"
+        );
+    }
+}
+
+#[test]
 fn sigterm_during_preparation_runs_cleanup() {
     let temp = tempfile::tempdir().unwrap();
     let marker = temp.path().join("started");

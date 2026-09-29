@@ -249,6 +249,10 @@ async fn edit_backend(existing: Option<&Backend>) -> Result<Backend> {
                     }
                 })
                 .interact_text()?;
+            let health_check_interval_secs = Input::<u64>::with_theme(&theme)
+                .with_prompt("API health check interval in seconds (0 disables)")
+                .default(old.map(|a| a.health_check_interval_secs).unwrap_or(30))
+                .interact_text()?;
             let cleanup = optional_input(
                 "Cleanup command (optional)",
                 old.and_then(|a| a.cleanup.as_deref()),
@@ -258,6 +262,7 @@ async fn edit_backend(existing: Option<&Backend>) -> Result<Backend> {
                 persistent,
                 cleanup,
                 timeout_secs,
+                health_check_interval_secs,
             })
         }
     };
@@ -310,7 +315,7 @@ async fn test_connection(backend: &Backend) -> Result<Vec<String>> {
             ).await?;
             tokio::select! {
                 result = bridge.model_ids() => result,
-                error = access.wait_for_failure() => anyhow::bail!("{error}"),
+                error = access.supervise(&bridge) => anyhow::bail!("{error}"),
             }
         } => result,
         _ = interrupt.recv() => Err(anyhow::anyhow!("connection test interrupted")),
@@ -512,6 +517,7 @@ mod tests {
                     command: "true".into(),
                     persistent: false,
                     timeout_secs: 2,
+                    health_check_interval_secs: 30,
                     cleanup: Some(format!("touch '{}'", marker.display())),
                 }),
             };

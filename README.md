@@ -92,6 +92,25 @@ Replace `home-gpu` and the ports with your own connection details. SSH must be i
 
 You can configure a proxy or another access utility the same way. Install and authenticate it beforehand; access commands cannot prompt for input. Commands that only prepare a connection can use **Finish before launching the agent**, with an optional cleanup command to stop any background service they start.
 
+After initial backend readiness, Codeport automatically restarts persistent access commands that exit, with a one-second delay between attempts, while keeping the coding agent running. The command and its child processes are stopped when the agent exits. Preparation commands are not restarted just because they finish.
+
+For backends with an access command, Codeport also checks the authenticated model-list API every 30 seconds. Checks bypass the cached catalog and require a successful HTTP response containing a nonempty, valid model list; each request times out after 15 seconds. A failed check runs the cleanup command, stops the old access process and its children, then relaunches the access command after a one-second delay. This applies to both command lifecycles and keeps the agent running during recovery. Failed restarts are retried, and polling resumes after readiness succeeds. Cleanup errors are reported but do not prevent restarting.
+
+Set **API health check interval in seconds** in `codeport -cfg`, or set `health_check_interval_secs` in the backend's `access` configuration:
+
+```json
+"access": {
+  "command": "ssh -N -L 8000:localhost:8000 server",
+  "persistent": true,
+  "timeout_secs": 30,
+  "health_check_interval_secs": 30,
+  "cleanup": null
+}
+```
+
+Use `0` to disable API polling, including for backends that do not support the model-list endpoint. Persistent commands are still restarted when their process exits. Health checks do not generate completions or verify model inference.
+
+
 ## Web search for Claude Code
 
 Claude's built-in `WebSearch` works with public DuckDuckGo search by default when using a Chat Completions or Responses backend. No search API key is needed. Native Anthropic backends keep their own search service.

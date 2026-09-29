@@ -114,6 +114,8 @@ pub struct Access {
     pub cleanup: Option<String>,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    #[serde(default = "default_timeout")]
+    pub health_check_interval_secs: u64,
 }
 fn default_timeout() -> u64 {
     30

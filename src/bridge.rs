@@ -39,6 +39,10 @@ struct BridgeState {
 }
 
 impl Bridge {
+    pub async fn health_check(&self) -> Result<()> {
+        fetch_catalog(&self.state).await.map(|_| ())
+    }
+
     pub async fn model_ids(&self) -> Result<Vec<String>> {
         Ok(catalog(&self.state)
             .await?
@@ -121,64 +125,67 @@ async fn catalog(state: &BridgeState) -> Result<&Vec<Value>> {
                     json!({"id":model,"object":"model","created":0,"owned_by":"codeport"}),
                 ]);
             }
-            let mut url = endpoint(&state.backend.url, state.backend.protocol)?;
-            let path = url.path().to_owned();
-            let suffix = match state.backend.protocol {
-                Protocol::ChatCompletions => "chat/completions",
-                Protocol::Responses => "responses",
-                Protocol::Anthropic => "messages",
-            };
-            url.set_path(&format!(
-                "{}models",
-                path.strip_suffix(suffix)
-                    .context("invalid backend endpoint")?
-            ));
-            let mut request = state.client.get(url).timeout(Duration::from_secs(15));
-            if state.backend.protocol == Protocol::Anthropic {
-                request = request.header("anthropic-version", "2023-06-01");
-            }
-            request = match &state.backend.auth {
-                Some(Auth::Bearer { token }) => request.bearer_auth(token),
-                Some(Auth::Basic { username, password }) => {
-                    request.basic_auth(username, Some(password))
-                }
-                None => request,
-            };
-            // Do not include upstream response bodies or URLs, which can contain secrets.
-            let response = request
-                .send()
-                .await
-                .map_err(|_| anyhow::anyhow!("could not reach backend model endpoint"))?;
-            if !response.status().is_success() {
-                bail!("backend model endpoint returned HTTP {}", response.status());
-            }
-            let response: Value = response
-                .json()
-                .await
-                .map_err(|_| anyhow::anyhow!("invalid JSON from backend model endpoint"))?;
-            let entries = response["data"]
-                .as_array()
-                .context("backend model endpoint must return a data array")?;
-            let mut seen = std::collections::HashSet::new();
-            let mut models = Vec::new();
-            for entry in entries {
-                let id = entry["id"]
-                    .as_str()
-                    .filter(|id| !id.trim().is_empty())
-                    .context("backend model catalog contains a missing or empty model ID")?;
-                if seen.insert(id.to_owned()) {
-                    models.push(entry.clone());
-                }
-            }
-            if models.is_empty() {
-                bail!("backend model endpoint returned no models");
-            }
-            Ok(models)
+            fetch_catalog(state).await
         })
         .await
         .context(
             "model discovery failed; check the backend /v1/models endpoint or set --model MODEL",
         )
+}
+
+// Always fetch upstream: health checks must bypass the session catalog cache.
+async fn fetch_catalog(state: &BridgeState) -> Result<Vec<Value>> {
+    let mut url = endpoint(&state.backend.url, state.backend.protocol)?;
+    let path = url.path().to_owned();
+    let suffix = match state.backend.protocol {
+        Protocol::ChatCompletions => "chat/completions",
+        Protocol::Responses => "responses",
+        Protocol::Anthropic => "messages",
+    };
+    url.set_path(&format!(
+        "{}models",
+        path.strip_suffix(suffix)
+            .context("invalid backend endpoint")?
+    ));
+    let mut request = state.client.get(url).timeout(Duration::from_secs(15));
+    if state.backend.protocol == Protocol::Anthropic {
+        request = request.header("anthropic-version", "2023-06-01");
+    }
+    request = match &state.backend.auth {
+        Some(Auth::Bearer { token }) => request.bearer_auth(token),
+        Some(Auth::Basic { username, password }) => request.basic_auth(username, Some(password)),
+        None => request,
+    };
+    // Do not include upstream response bodies or URLs, which can contain secrets.
+    let response = request
+        .send()
+        .await
+        .map_err(|_| anyhow::anyhow!("could not reach backend model endpoint"))?;
+    if !response.status().is_success() {
+        bail!("backend model endpoint returned HTTP {}", response.status());
+    }
+    let response: Value = response
+        .json()
+        .await
+        .map_err(|_| anyhow::anyhow!("invalid JSON from backend model endpoint"))?;
+    let entries = response["data"]
+        .as_array()
+        .context("backend model endpoint must return a data array")?;
+    let mut seen = std::collections::HashSet::new();
+    let mut models = Vec::new();
+    for entry in entries {
+        let id = entry["id"]
+            .as_str()
+            .filter(|id| !id.trim().is_empty())
+            .context("backend model catalog contains a missing or empty model ID")?;
+        if seen.insert(id.to_owned()) {
+            models.push(entry.clone());
+        }
+    }
+    if models.is_empty() {
+        bail!("backend model endpoint returned no models");
+    }
+    Ok(models)
 }
 
 async fn models(State(state): State<Arc<BridgeState>>, headers: HeaderMap) -> Response {

@@ -13,6 +13,8 @@ pub struct AccessSession {
     process: Option<Child>,
     group: Option<i32>,
     started: bool,
+    recovering: bool,
+    backend_url: String,
 }
 
 impl AccessSession {
@@ -22,6 +24,8 @@ impl AccessSession {
             process: None,
             group: None,
             started: false,
+            recovering: false,
+            backend_url: String::new(),
         }
     }
 
@@ -29,6 +33,7 @@ impl AccessSession {
         let Some(config) = self.config.clone() else {
             return Ok(());
         };
+        self.backend_url = backend_url.to_owned();
         self.process = Some(
             shell(&config.command)
                 .spawn()
@@ -86,23 +91,64 @@ impl AccessSession {
         }
     }
 
-    pub async fn wait_for_failure(&mut self) -> String {
-        if self.config.as_ref().is_some_and(|c| c.persistent) {
-            if let Some(group) = self.group {
-                return match wait_without_reaping(group).await {
-                    Ok(()) => "backend access process exited".into(),
-                    Err(error) => format!("backend access process failed: {error}"),
-                };
+    pub async fn supervise(&mut self, bridge: &crate::bridge::Bridge) -> String {
+        let Some(config) = self.config.clone() else {
+            return std::future::pending().await;
+        };
+        loop {
+            if !self.recovering {
+                tokio::select! {
+                    result = async {
+                        if config.persistent {
+                            if let Some(group) = self.group {
+                                return wait_without_reaping(group).await;
+                            }
+                        }
+                        std::future::pending().await
+                    } => {
+                        if let Err(error) = result {
+                            return format!("backend access process failed: {error}");
+                        }
+                        eprintln!("codeport: backend access process exited; restarting");
+                    }
+                    result = async {
+                        if config.health_check_interval_secs == 0 {
+                            std::future::pending::<()>().await;
+                        }
+                        tokio::time::sleep(Duration::from_secs(config.health_check_interval_secs)).await;
+                        bridge.health_check().await
+                    } => {
+                        match result {
+                            Ok(()) => continue,
+                            Err(error) => eprintln!("codeport: backend health check failed: {error}; restarting access"),
+                        }
+                    }
+                }
+                self.recovering = true;
+            }
+            // Recovery state survives cancellation between model discovery and
+            // agent launch. Final cleanup never launches another companion.
+            self.run_cleanup_command().await;
+            self.stop_process().await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let url = self.backend_url.clone();
+            match self.start(&url).await {
+                Ok(()) => self.recovering = false,
+                Err(error) => eprintln!("codeport: could not restart backend access: {error}"),
             }
         }
-        std::future::pending().await
     }
 
     pub async fn cleanup(&mut self) {
         if !self.started {
             return;
         }
+        self.run_cleanup_command().await;
+        self.stop_process().await;
         self.started = false;
+    }
+
+    async fn run_cleanup_command(&mut self) {
         if let Some(command) = self
             .config
             .as_ref()
@@ -111,7 +157,8 @@ impl AccessSession {
         {
             match shell(command).spawn() {
                 Ok(mut child) => {
-                    let group = child.id().map(|id| id as i32);
+                    let mut guard = ProcessGroupGuard(child.id().map(|id| id as i32));
+                    let group = guard.0;
                     let result = tokio::time::timeout(
                         Duration::from_secs(10),
                         wait_without_reaping(group.unwrap()),
@@ -128,6 +175,7 @@ impl AccessSession {
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         signal_group(group, libc::SIGKILL);
                     }
+                    guard.0 = None;
                     match child.wait().await {
                         Ok(status) if completed && !status.success() => {
                             eprintln!("codeport: cleanup command failed: {status}")
@@ -139,13 +187,28 @@ impl AccessSession {
                 Err(error) => eprintln!("codeport: could not start cleanup command: {error}"),
             }
         }
-        if let Some(group) = self.group.take() {
+    }
+
+    async fn stop_process(&mut self) {
+        if let Some(group) = self.group {
             signal_group(group, libc::SIGTERM);
             tokio::time::sleep(Duration::from_millis(100)).await;
             signal_group(group, libc::SIGKILL);
+            self.group = None;
         }
         if let Some(mut child) = self.process.take() {
             let _ = child.wait().await;
+        }
+    }
+}
+
+// A cancelled cleanup must also terminate its descendants before Child drops.
+struct ProcessGroupGuard(Option<i32>);
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if let Some(group) = self.0 {
+            signal_group(group, libc::SIGKILL);
         }
     }
 }
