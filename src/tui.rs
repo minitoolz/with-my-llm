@@ -315,7 +315,7 @@ async fn test_connection(backend: &Backend) -> Result<Vec<String>> {
             ).await?;
             tokio::select! {
                 result = bridge.model_ids() => result,
-                error = access.supervise(&bridge) => anyhow::bail!("{error}"),
+                never = access.supervise(&bridge) => match never {},
             }
         } => result,
         _ = interrupt.recv() => Err(anyhow::anyhow!("connection test interrupted")),

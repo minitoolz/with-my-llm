@@ -16,12 +16,21 @@ fn fixture(
     access_script: &str,
     persistent: bool,
 ) -> (tempfile::TempDir, Command, std::net::TcpListener) {
+    fixture_for_agent("codex", agent_script, access_script, persistent)
+}
+
+fn fixture_for_agent(
+    agent_name: &str,
+    agent_script: &str,
+    access_script: &str,
+    persistent: bool,
+) -> (tempfile::TempDir, Command, std::net::TcpListener) {
     let directory = tempfile::tempdir().unwrap();
     let codex_home = directory.path().join("codex-home");
     fs::create_dir(&codex_home).unwrap();
     fs::write(codex_home.join("config.toml"), "model = \"original\"\n").unwrap();
     fs::write(codex_home.join("models_cache.json"), "original catalog").unwrap();
-    let agent = directory.path().join("codex");
+    let agent = directory.path().join(agent_name);
     fs::write(&agent, format!("#!/bin/sh\n{agent_script}\n")).unwrap();
     fs::set_permissions(&agent, fs::Permissions::from_mode(0o700)).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -30,13 +39,13 @@ fn fixture(
         "backends":{"test":{"url":format!("http://{}/v1", listener.local_addr().unwrap()),"protocol":"responses","model":"fixture-model","access":{
             "command":access_script,"persistent":persistent,"timeout_secs":5,
             "cleanup":format!("printf cleaned > {}",quote(&directory.path().join("cleanup")))
-        }}},"agents":{"codex":{"backend":"test"}}
+        }}},"agents":{agent_name:{"backend":"test"}}
     })).unwrap()).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_codeport"));
     command
         .arg("--config")
         .arg(&config)
-        .arg("codex")
+        .arg(agent_name)
         .env("CODEX_HOME", &codex_home)
         .env(
             "PATH",
@@ -95,6 +104,12 @@ fn preserves_agent_status_and_cleans_access() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("codeport: codex exited with exit status: 23"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(
         fs::read_to_string(directory.path().join("cleanup")).unwrap(),
         "cleaned"
@@ -147,6 +162,128 @@ fn persistent_access_restarts_until_agent_exits() {
             "cleaned"
         );
     }
+}
+
+#[test]
+fn opencode_survives_access_death_and_failed_reconnections() {
+    let (directory, mut command, _listener) = fixture_for_agent(
+        "opencode",
+        "if [ \"$1\" = '--help' ]; then printf '%s\\n' '--standalone'; exit 0; fi\n\
+         printf '%s\\n' \"$$\" >> \"$AGENT_READY\"\n\
+         attempts=0\n\
+         while [ ! -f \"$ACCESS_RESTORED\" ]; do\n\
+           attempts=$((attempts + 1))\n\
+           if [ \"$attempts\" -ge 240 ]; then exit 99; fi\n\
+           sleep 0.05\n\
+         done\n\
+         sleep 0.2\n\
+         exit 23",
+        "printf x >> \"$ACCESS_STARTS\"\n\
+         case $(wc -c < \"$ACCESS_STARTS\") in\n\
+           1) while [ ! -f \"$AGENT_READY\" ]; do sleep 0.05; done; kill -KILL $$ ;;\n\
+           2|3) sleep 0.1; exit 255 ;;\n\
+           *) touch \"$ACCESS_RESTORED\"; exec sleep 60 ;;\n\
+         esac",
+        true,
+    );
+    let starts = directory.path().join("access-starts");
+    command
+        .env("ACCESS_STARTS", &starts)
+        .env("ACCESS_RESTORED", directory.path().join("access-restored"))
+        .env("AGENT_READY", directory.path().join("agent-ready"));
+    let output = command.output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(23), "{stderr}");
+    assert_eq!(fs::read_to_string(&starts).unwrap(), "xxxx", "{stderr}");
+    assert_eq!(
+        fs::read_to_string(directory.path().join("agent-ready"))
+            .unwrap()
+            .lines()
+            .count(),
+        1,
+        "OpenCode was relaunched during access recovery"
+    );
+    assert!(stderr.contains("backend access restored"), "{stderr}");
+    assert!(
+        stderr.contains("codeport: opencode exited with exit status: 23"),
+        "{stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("cleanup")).unwrap(),
+        "cleaned"
+    );
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(fs::read_to_string(&starts).unwrap(), "xxxx");
+}
+
+#[test]
+fn opencode_stays_running_when_access_cannot_reconnect() {
+    let (directory, mut command, listener) = fixture_for_agent(
+        "opencode",
+        "if [ \"$1\" = '--help' ]; then exit 0; fi\n\
+         touch \"$AGENT_READY\"\n\
+         attempts=0\n\
+         while [ ! -f \"$STOP_AGENT\" ]; do\n\
+           printf x >> \"$AGENT_HEARTBEAT\"\n\
+           attempts=$((attempts + 1))\n\
+           if [ \"$attempts\" -ge 240 ]; then exit 99; fi\n\
+           sleep 0.05\n\
+         done\n\
+         exit 23",
+        "printf x >> \"$ACCESS_STARTS\"\n\
+         if [ \"$(wc -c < \"$ACCESS_STARTS\")\" -gt 1 ]; then exit 255; fi\n\
+         printf '%s' \"$$\" > \"$ACCESS_PID\"\n\
+         exec sleep 60",
+        true,
+    );
+    let ready = directory.path().join("agent-ready");
+    let heartbeat = directory.path().join("heartbeat");
+    let starts = directory.path().join("access-starts");
+    let pid_file = directory.path().join("access-pid");
+    let stop = directory.path().join("stop-agent");
+    command
+        .env("AGENT_READY", &ready)
+        .env("AGENT_HEARTBEAT", &heartbeat)
+        .env("ACCESS_STARTS", &starts)
+        .env("ACCESS_PID", &pid_file)
+        .env("STOP_AGENT", &stop);
+    let mut child = command.spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready.exists() || !heartbeat.exists() {
+        assert!(Instant::now() < deadline, "OpenCode did not start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let access_pid: i32 = fs::read_to_string(pid_file).unwrap().parse().unwrap();
+    drop(listener);
+    assert_eq!(unsafe { libc::kill(access_pid, libc::SIGKILL) }, 0);
+    while fs::metadata(&starts).unwrap().len() < 4 {
+        assert!(Instant::now() < deadline, "access was not retried");
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "launcher exited during recovery"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let length = fs::metadata(&heartbeat).unwrap().len();
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(child.try_wait().unwrap().is_none());
+    assert!(
+        fs::metadata(&heartbeat).unwrap().len() > length,
+        "OpenCode stopped while access remained unavailable"
+    );
+    fs::write(stop, "stop").unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(23), "{stderr}");
+    assert!(
+        stderr.contains("could not restart backend access"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("backend access restored"), "{stderr}");
+    assert_eq!(
+        fs::read_to_string(directory.path().join("cleanup")).unwrap(),
+        "cleaned"
+    );
 }
 
 #[test]

@@ -289,3 +289,46 @@ fn health_check_interval_defaults_and_can_be_disabled() {
         serde_json::from_str(r#"{"command":"true","health_check_interval_secs":0}"#).unwrap();
     assert_eq!(config.health_check_interval_secs, 0);
 }
+
+#[tokio::test]
+async fn process_monitor_error_does_not_end_supervision() {
+    let (_listener, url) = listening_backend().await;
+    let mut session = access("sleep 60", true, None);
+    session.config.as_mut().unwrap().health_check_interval_secs = 0;
+    session.start(&url).await.unwrap();
+    let bridge = crate::bridge::Bridge::start(
+        crate::config::Backend {
+            url,
+            protocol: crate::config::Protocol::Responses,
+            model: Some("fixture-model".into()),
+            auth: None,
+            access: None,
+        },
+        Some("fixture-model".into()),
+    )
+    .await
+    .unwrap();
+
+    // Simulate losing the child to another reaper: waitid now returns ECHILD.
+    // Clear the group before reaping; the injected stale ID is only used for
+    // observation, and the guard removes it before cleanup even on a panic.
+    let group = session.group.take().unwrap();
+    signal_group(group, libc::SIGKILL);
+    session.process.as_mut().unwrap().wait().await.unwrap();
+    struct ClearObservedGroup<'a>(&'a mut AccessSession);
+    impl Drop for ClearObservedGroup<'_> {
+        fn drop(&mut self) {
+            self.0.group = None;
+        }
+    }
+    let observed = ClearObservedGroup(&mut session);
+    observed.0.group = Some(group);
+    let result =
+        tokio::time::timeout(Duration::from_millis(1200), observed.0.supervise(&bridge)).await;
+    drop(observed);
+    session.cleanup().await;
+    assert!(
+        result.is_err(),
+        "a process-monitoring error ended supervision"
+    );
+}
