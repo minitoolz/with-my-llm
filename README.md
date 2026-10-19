@@ -94,13 +94,13 @@ For example, to reach a model server listening on port `8000` on an SSH host nam
 3. Choose **Stay running during the agent session** for the command lifecycle.
 4. Save the backend, then launch with `codeport opencode --backend home-gpu`.
 
-Replace `home-gpu` and the ports with your own connection details. SSH must be installed and able to authenticate without a password prompt. Codeport waits for the local port to become reachable before launching the agent. If the tunnel exits unexpectedly, the agent session stops too.
+Replace `home-gpu` and the ports with your own connection details. SSH must be installed and able to authenticate without a password prompt. Codeport waits for the local port to become reachable before launching the agent. After launch, an unexpected tunnel exit triggers reconnection while the agent stays running.
 
 You can configure a proxy or another access utility the same way. Install and authenticate it beforehand; access commands cannot prompt for input. Commands that only prepare a connection can use **Finish before launching the agent**, with an optional cleanup command to stop any background service they start.
 
-After initial backend readiness, Codeport automatically restarts persistent access commands that exit, with a one-second delay between attempts, while keeping the coding agent running. The command and its child processes are stopped when the agent exits. Preparation commands are not restarted just because they finish.
+After initial backend readiness, Codeport automatically restarts persistent access commands that exit, with a one-second delay between attempts, while keeping the coding agent running. The command and its child processes are stopped when the agent exits. Preparation commands are not restarted just because they finish. A tunnel started separately from Codeport is not managed or restarted; configure its command under **Backend access** to enable this recovery.
 
-For backends with an access command, Codeport also checks the authenticated model-list API every 30 seconds. Checks bypass the cached catalog and require a successful HTTP response containing a nonempty, valid model list; each request times out after 15 seconds. A failed check runs the cleanup command, stops the old access process and its children, then relaunches the access command after a one-second delay. This applies to both command lifecycles and keeps the agent running during recovery. Failed restarts are retried, and polling resumes after readiness succeeds. Cleanup errors are reported but do not prevent restarting.
+For backends with an access command, Codeport also checks the authenticated model-list API every 30 seconds. Checks bypass the cached catalog and require a successful HTTP response containing a nonempty, valid model list; each request times out after 15 seconds. A failed check runs the cleanup command, stops the old access process and its children, then relaunches the access command after a one-second delay. This applies to both command lifecycles and keeps the agent running during recovery. Failed restarts and process-monitoring errors are retried without terminating the agent, and polling resumes after readiness succeeds. Cleanup errors are reported but do not prevent restarting.
 
 Set **API health check interval in seconds** in `codeport -cfg`, or set `health_check_interval_secs` in the backend's `access` configuration:
 
@@ -159,4 +159,5 @@ codeport codex -- -c model_context_window=65536
 - **401 Unauthorized:** update the backend's credentials with `codeport -cfg`.
 - **Model not found:** check the exact model ID, including its namespace, and confirm the server has loaded it.
 - **Connection timeout:** check the backend URL, server availability, and any SSH or proxy command. A reachable port alone does not confirm valid credentials or a loaded model.
+- **Agent stops after a connection loss:** managed access recovery reports `backend access restored` when ready. Agent exits report their exit code or terminating signal; SIGTERM and SIGINT received by Codeport are reported separately. The launcher exits when the agent exits; an in-flight model request can fail during recovery. With **Direct** access, restart separately launched tunnels yourself or configure a managed access command.
 - **WebFetch blocked or rejected:** restart Codeport after updating it. Website errors such as HTTP 402 or 403 can still prevent fetching even when Codeport allows the request.

@@ -91,24 +91,29 @@ impl AccessSession {
         }
     }
 
-    pub async fn supervise(&mut self, bridge: &crate::bridge::Bridge) -> String {
+    pub async fn supervise(&mut self, bridge: &crate::bridge::Bridge) -> std::convert::Infallible {
         let Some(config) = self.config.clone() else {
             return std::future::pending().await;
         };
         loop {
             if !self.recovering {
                 tokio::select! {
-                    result = async {
+                    _ = async {
                         if config.persistent {
                             if let Some(group) = self.group {
-                                return wait_without_reaping(group).await;
+                                loop {
+                                    match wait_without_reaping(group).await {
+                                        Ok(()) => return,
+                                        Err(error) => {
+                                            eprintln!("codeport: could not monitor backend access process: {error}; retrying");
+                                            tokio::time::sleep(Duration::from_secs(1)).await;
+                                        }
+                                    }
+                                }
                             }
                         }
                         std::future::pending().await
                     } => {
-                        if let Err(error) = result {
-                            return format!("backend access process failed: {error}");
-                        }
                         eprintln!("codeport: backend access process exited; restarting");
                     }
                     result = async {
@@ -133,7 +138,10 @@ impl AccessSession {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let url = self.backend_url.clone();
             match self.start(&url).await {
-                Ok(()) => self.recovering = false,
+                Ok(()) => {
+                    self.recovering = false;
+                    eprintln!("codeport: backend access restored");
+                }
                 Err(error) => eprintln!("codeport: could not restart backend access: {error}"),
             }
         }

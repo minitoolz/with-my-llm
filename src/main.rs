@@ -10,7 +10,7 @@ mod random_port;
 mod tui;
 mod web_search;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::process::ExitCode;
 
@@ -147,7 +147,7 @@ async fn launch(
     let discovered_models = if model.is_none() {
         tokio::select! {
             result = bridge.model_ids() => result?,
-            error = access.supervise(&bridge) => bail!("{error}"),
+            never = access.supervise(&bridge) => match never {},
             _ = terminate.recv() => return Ok(143),
             _ = interrupt.recv() => return Ok(130),
         }
@@ -174,19 +174,19 @@ async fn launch(
         })?;
     let status = tokio::select! {
         status = child.wait() => status?,
-        error = access.supervise(&bridge) => {
-            child.shutdown(libc::SIGTERM).await;
-            bail!("{error}");
-        }
+        never = access.supervise(&bridge) => match never {},
         _ = terminate.recv() => {
+            eprintln!("codeport: received SIGTERM; stopping {agent}");
             child.shutdown(libc::SIGTERM).await;
             return Ok(143);
         }
         _ = interrupt.recv() => {
+            eprintln!("codeport: received SIGINT; stopping {agent}");
             child.shutdown(libc::SIGINT).await;
             return Ok(130);
         }
     };
+    eprintln!("codeport: {agent} exited with {status}");
     drop(child);
     // Keep temporary agent configuration and the proxy alive until the child exits.
     drop(launch);
