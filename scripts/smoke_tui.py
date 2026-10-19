@@ -58,7 +58,16 @@ def main():
             expect("Default model")
             send()
             expect("Authentication")
+            send(b"\x1b[B\r")
+            expect("Bearer token")
+            # Empty new credentials must keep the prompt open.
             send()
+            expect("Bearer token")
+            send(b"secret-key")
+            expect("*******key")
+            send(b"\x7f")
+            expect("******-ke")
+            send(b"y\r")
             expect("Backend access")
             send()
             expect("Do you want to test the connection?")
@@ -72,6 +81,22 @@ def main():
             expect("Backend")
             send()
             expect("Model override")
+            send()
+            expect("Saved to")
+            expect("Add backend")
+            send(b"\x1b[B" * 4 + b"\r")
+            expect("Web search provider")
+            send(b"\x1b[B" * 2 + b"\r")
+            expect("Brave API key")
+            send(b"brave-secret")
+            expect("*********ret")
+            send()
+            expect("Saved to")
+            expect("Add backend")
+            send(b"\x1b[B" * 4 + b"\r")
+            expect("Web search provider")
+            send()
+            expect("Brave API key (empty: keep existing)")
             send()
             expect("Saved to")
             expect("Add backend")
@@ -93,9 +118,12 @@ def main():
             data = json.loads(config.read_text())
             assert data["agents"]["pi"]["backend"] == "smoke"
             assert data["backends"]["smoke"]["model"] is None
+            assert data["backends"]["smoke"]["auth"]["token"] == "secret-key"
+            assert data["web_search"]["api_key"] == "brave-secret"
             assert config.stat().st_mode & 0o777 == 0o600
             assert config.parent.stat().st_mode & 0o777 == 0o700
-            print("PASS TUI: add backend, blank model, bind Pi, save 0600 credentials, exit")
+            print("PASS TUI: add backend, masked API keys, backspace, keep existing key, "
+                  "blank model, bind Pi, save 0600 credentials, exit")
         finally:
             if child.poll() is None:
                 child.kill()

@@ -2,6 +2,8 @@ use crate::config::{
     config_path, Access, AgentBinding, Auth, Backend, Config, Protocol, SearchProvider,
 };
 use anyhow::Result;
+use dialoguer::console::{measure_text_width, Key, Term};
+use dialoguer::theme::Theme;
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password, Select};
 
 pub async fn run(alternate_path: Option<&std::path::Path>) -> Result<()> {
@@ -325,6 +327,44 @@ async fn test_connection(backend: &Backend) -> Result<Vec<String>> {
     result
 }
 
+fn masked_key(value: &str) -> String {
+    let hidden = value.chars().count().saturating_sub(3);
+    "*".repeat(hidden) + &value.chars().skip(hidden).collect::<String>()
+}
+
+fn input_api_key(prompt: &str, allow_empty: bool) -> Result<String> {
+    let term = Term::stderr();
+    anyhow::ensure!(term.is_term(), "not a terminal");
+    let mut prefix = String::new();
+    ColorfulTheme::default().format_password_prompt(&mut prefix, prompt)?;
+    let mut value = String::new();
+    let mut wrapped_lines = 0;
+    loop {
+        term.clear_line()?;
+        term.clear_last_lines(wrapped_lines)?;
+        let display = format!("{prefix}{}", masked_key(&value));
+        term.write_str(&display)?;
+        term.flush()?;
+        let width = usize::from(term.size().1).max(1);
+        wrapped_lines = measure_text_width(&display).saturating_sub(1) / width;
+        match term.read_key()? {
+            Key::Enter if allow_empty || !value.is_empty() => {
+                term.write_line("")?;
+                return Ok(value);
+            }
+            Key::Backspace => {
+                value.pop();
+            }
+            Key::Char(c) if !c.is_control() => value.push(c),
+            Key::Escape | Key::CtrlC => {
+                term.write_line("")?;
+                anyhow::bail!("API key entry cancelled");
+            }
+            _ => {}
+        }
+    }
+}
+
 fn edit_auth(existing: Option<&Auth>) -> Result<Option<Auth>> {
     let theme = ColorfulTheme::default();
     if existing.is_some()
@@ -343,9 +383,7 @@ fn edit_auth(existing: Option<&Auth>) -> Result<Option<Auth>> {
             .interact()?
         {
             1 => Some(Auth::Bearer {
-                token: Password::with_theme(&theme)
-                    .with_prompt("Bearer token")
-                    .interact()?,
+                token: input_api_key("Bearer token", false)?,
             }),
             2 => {
                 let username = Input::<String>::with_theme(&theme)
@@ -415,14 +453,14 @@ fn edit_search(existing: &SearchProvider) -> Result<SearchProvider> {
                 SearchProvider::Brave { api_key } => Some(api_key),
                 _ => None,
             };
-            let key = Password::with_theme(&theme)
-                .with_prompt(if current.is_some() {
+            let key = input_api_key(
+                if current.is_some() {
                     "Brave API key (empty: keep existing)"
                 } else {
                     "Brave API key"
-                })
-                .allow_empty_password(current.is_some())
-                .interact()?;
+                },
+                current.is_some(),
+            )?;
             SearchProvider::Brave {
                 api_key: if key.is_empty() {
                     current.unwrap().clone()
@@ -477,6 +515,21 @@ fn show(config: &Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_key_preview_shows_only_the_last_three_characters() {
+        for (value, expected) in [
+            ("", ""),
+            ("a", "a"),
+            ("ab", "ab"),
+            ("abc", "abc"),
+            ("abcd", "*bcd"),
+            ("secret-key", "*******key"),
+            ("é한글abc", "***abc"),
+        ] {
+            assert_eq!(masked_key(value), expected);
+        }
+    }
     use axum::{
         http::{HeaderMap, StatusCode},
         routing::get,
