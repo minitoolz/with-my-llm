@@ -17,15 +17,27 @@ pub enum Protocol {
     Anthropic,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default = "crate::random_port::default_candidates")]
+    pub random_port_candidates: String,
     #[serde(default)]
     pub backends: BTreeMap<String, Backend>,
     #[serde(default)]
     pub agents: BTreeMap<String, AgentBinding>,
     #[serde(default)]
     pub web_search: SearchProvider,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            random_port_candidates: crate::random_port::default_candidates(),
+            backends: BTreeMap::new(),
+            agents: BTreeMap::new(),
+            web_search: SearchProvider::default(),
+        }
+    }
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
@@ -49,8 +61,29 @@ impl std::fmt::Debug for SearchProvider {
     }
 }
 impl SearchProvider {
-    pub fn validate(&self) -> Result<()> {
+    pub fn uses_random_port(&self) -> bool {
         match self {
+            Self::Public => false,
+            Self::Searxng { url } => crate::random_port::has_placeholder(url),
+            Self::Brave { api_key } => crate::random_port::has_placeholder(api_key),
+        }
+    }
+
+    pub fn with_port(&self, port: u16) -> Self {
+        match self {
+            Self::Public => Self::Public,
+            Self::Searxng { url } => Self::Searxng {
+                url: crate::random_port::substitute(url, port),
+            },
+            Self::Brave { api_key } => Self::Brave {
+                api_key: crate::random_port::substitute(api_key, port),
+            },
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let resolved = self.with_port(1024);
+        match &resolved {
             Self::Public => {}
             Self::Searxng { url } => {
                 let url = reqwest::Url::parse(url).context("Invalid SearXNG URL")?;
@@ -87,6 +120,39 @@ pub struct Backend {
     pub auth: Option<Auth>,
     #[serde(default)]
     pub access: Option<Access>,
+}
+impl Backend {
+    pub fn uses_random_port(&self) -> bool {
+        let has = crate::random_port::has_placeholder;
+        has(&self.url)
+            || self.auth.as_ref().is_some_and(|auth| match auth {
+                Auth::Bearer { token } => has(token),
+                Auth::Basic { username, password } => has(username) || has(password),
+            })
+            || self.access.as_ref().is_some_and(|access| {
+                has(&access.command) || access.cleanup.as_deref().is_some_and(has)
+            })
+    }
+
+    pub fn with_port(&self, port: u16) -> Self {
+        let replace = |value: &str| crate::random_port::substitute(value, port);
+        let mut backend = self.clone();
+        backend.url = replace(&self.url);
+        backend.auth = self.auth.as_ref().map(|auth| match auth {
+            Auth::Bearer { token } => Auth::Bearer {
+                token: replace(token),
+            },
+            Auth::Basic { username, password } => Auth::Basic {
+                username: replace(username),
+                password: replace(password),
+            },
+        });
+        if let Some(access) = &mut backend.access {
+            access.command = replace(&access.command);
+            access.cleanup = access.cleanup.as_deref().map(replace);
+        }
+        backend
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -165,8 +231,10 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        crate::random_port::parse_candidates(&self.random_port_candidates)?;
         self.web_search.validate()?;
         for (name, backend) in &self.backends {
+            let backend = backend.with_port(1024);
             if name.trim().is_empty() {
                 bail!("Backend names cannot be empty");
             }
@@ -269,6 +337,54 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn random_port_defaults_validation_and_templates() {
+        let old: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.random_port_candidates, "1024-65535");
+        assert_eq!(
+            Config::default().random_port_candidates,
+            old.random_port_candidates
+        );
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "random_port_candidates": "8000\t - 8002,9000",
+            "backends": {"test": {
+                "url": "http://127.0.0.1:{PoRT}/v1",
+                "protocol": "responses",
+                "auth": {"type": "basic", "username": "user-{port}", "password": "key-{PORT}"},
+                "access": {"command": "serve --port {PORT}", "cleanup": "stop {port}"}
+            }},
+            "web_search": {"provider": "searxng", "url": "http://localhost:{PORT}"}
+        }))
+        .unwrap();
+        config.validate().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("credentials.json");
+        config.save_at(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded.backends["test"].url, "http://127.0.0.1:{PoRT}/v1");
+        let resolved = loaded.backends["test"].with_port(8001);
+        assert_eq!(resolved.url, "http://127.0.0.1:8001/v1");
+        assert!(
+            matches!(resolved.auth, Some(Auth::Basic { username, password })
+            if username == "user-8001" && password == "key-8001")
+        );
+        let access = resolved.access.unwrap();
+        assert_eq!(access.command, "serve --port 8001");
+        assert_eq!(access.cleanup.as_deref(), Some("stop 8001"));
+        assert!(
+            matches!(loaded.web_search.with_port(8001), SearchProvider::Searxng { url }
+            if url == "http://localhost:8001")
+        );
+        assert!(
+            matches!((SearchProvider::Brave { api_key: "key-{pOrT}".into() }).with_port(8001),
+            SearchProvider::Brave { api_key } if api_key == "key-8001")
+        );
+        for invalid in ["", "0", "65536", "8002-8000"] {
+            config.random_port_candidates = invalid.into();
+            assert!(config.validate().is_err());
+        }
+    }
     #[test]
     fn search_defaults_validation_and_secret_storage() {
         let old: Config = serde_json::from_str(r#"{"backends":{},"agents":{}}"#).unwrap();

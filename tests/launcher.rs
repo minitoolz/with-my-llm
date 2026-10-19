@@ -109,6 +109,133 @@ fn preserves_agent_status_and_cleans_access() {
     );
 }
 
+#[tokio::test]
+async fn random_port_is_shared_by_url_credentials_and_commands() {
+    use axum::{http::HeaderMap, routing::get, Json, Router};
+    let (directory, mut command, listener) = fixture("exit 23", "true", false);
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let marker = directory.path().join("chosen-port");
+    let cleanup = directory.path().join("cleanup");
+    let config_path = directory.path().join("credential.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["random_port_candidates"] = json!(port.to_string());
+    let backend = &mut config["backends"]["test"];
+    backend["url"] = json!("http://127.0.0.1:{pOrT}/v1");
+    backend["model"] = serde_json::Value::Null;
+    backend["auth"] = json!({"type":"bearer", "token":"secret-{PORT}"});
+    backend["access"]["command"] = json!(format!("printf '%s' '{{port}}' > {}", quote(&marker)));
+    backend["access"]["cleanup"] = json!(format!("printf '%s' '{{PoRt}}' > {}", quote(&cleanup)));
+    let saved = serde_json::to_vec(&config).unwrap();
+    fs::write(&config_path, &saved).unwrap();
+    let child = tokio::task::spawn_blocking(move || command.output().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fs::read_to_string(&marker).unwrap_or_default() != port.to_string() {
+        assert!(
+            Instant::now() < deadline,
+            "access command did not receive the selected port"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+        .await
+        .unwrap();
+    let app = Router::new().route(
+        "/v1/models",
+        get(move |headers: HeaderMap| async move {
+            assert_eq!(headers["authorization"], format!("Bearer secret-{port}"));
+            Json(json!({"data":[{"id":"random-port-model"}]}))
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let output = child.await.unwrap();
+    server.abort();
+    assert_eq!(
+        output.status.code(),
+        Some(23),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(cleanup).unwrap(), port.to_string());
+    assert_eq!(
+        fs::read(config_path).unwrap(),
+        saved,
+        "saved templates must not change"
+    );
+}
+
+#[test]
+fn exhausted_ports_stop_launch_only_when_a_placeholder_needs_a_port() {
+    for location in [
+        "none", "url", "token", "username", "password", "command", "cleanup", "direct", "search",
+    ] {
+        let (directory, mut command, listener) = fixture(
+            "touch \"$AGENT_MARKER\"; exit 23",
+            "touch \"$TUNNEL_MARKER\"",
+            false,
+        );
+        let agent_marker = directory.path().join("agent-started");
+        let tunnel_marker = directory.path().join("tunnel-started");
+        command
+            .env("AGENT_MARKER", &agent_marker)
+            .env("TUNNEL_MARKER", &tunnel_marker);
+        let port = listener.local_addr().unwrap().port();
+        let path = directory.path().join("credential.json");
+        let mut config: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        config["random_port_candidates"] = json!(port.to_string());
+        let backend = &mut config["backends"]["test"];
+        match location {
+            "url" | "direct" => {
+                backend["url"] = json!("http://127.0.0.1:{PoRt}/v1");
+                if location == "direct" {
+                    backend["access"] = serde_json::Value::Null;
+                }
+            }
+            "token" => backend["auth"] = json!({"type":"bearer", "token":"key-{port}"}),
+            "username" => {
+                backend["auth"] =
+                    json!({"type":"basic", "username":"user-{PORT}", "password":"key"})
+            }
+            "password" => {
+                backend["auth"] =
+                    json!({"type":"basic", "username":"user", "password":"key-{PORT}"})
+            }
+            "command" => {
+                backend["access"]["command"] = json!("touch \"$TUNNEL_MARKER\"; echo {pOrT}")
+            }
+            "cleanup" => backend["access"]["cleanup"] = json!("echo {port}"),
+            "search" => config["web_search"] = json!({"provider":"brave", "api_key":"key-{PORT}"}),
+            _ => {}
+        }
+        fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let output = command.output().unwrap();
+        if location == "none" {
+            assert_eq!(
+                output.status.code(),
+                Some(23),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(agent_marker.exists());
+            assert!(tunnel_marker.exists());
+        } else {
+            assert_eq!(output.status.code(), Some(1), "{location}");
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains(&format!(
+                    "Unable to assign a port in the port range: {port}"
+                )),
+                "{location}: {error}"
+            );
+            assert!(!agent_marker.exists(), "{location}: agent must not start");
+            assert!(!tunnel_marker.exists(), "{location}: tunnel must not start");
+            assert!(!directory.path().join("cleanup").exists());
+        }
+    }
+}
+
 #[test]
 fn persistent_access_restarts_until_agent_exits() {
     for exit_code in [0, 7] {

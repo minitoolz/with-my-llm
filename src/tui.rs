@@ -30,6 +30,7 @@ pub async fn run(alternate_path: Option<&std::path::Path>) -> Result<()> {
                 "Delete backend",
                 "Bind agent",
                 "Configure web search",
+                "Random port candidates",
                 "View configuration",
                 "Exit",
             ])
@@ -50,15 +51,18 @@ pub async fn run(alternate_path: Option<&std::path::Path>) -> Result<()> {
                         }
                     })
                     .interact_text()?;
-                updated
-                    .backends
-                    .insert(name.trim().to_string(), edit_backend(None).await?);
+                updated.backends.insert(
+                    name.trim().to_string(),
+                    edit_backend(None, &config.random_port_candidates).await?,
+                );
             }
             Some(1) => {
                 let Some(name) = select_backend(&config)? else {
                     continue;
                 };
-                let backend = edit_backend(config.backends.get(&name)).await?;
+                let backend =
+                    edit_backend(config.backends.get(&name), &config.random_port_candidates)
+                        .await?;
                 updated.backends.insert(name, backend);
             }
             Some(2) => {
@@ -118,6 +122,17 @@ pub async fn run(alternate_path: Option<&std::path::Path>) -> Result<()> {
                 updated.web_search = edit_search(&config.web_search)?;
             }
             Some(5) => {
+                updated.random_port_candidates = Input::<String>::with_theme(&theme)
+                    .with_prompt("Random port candidates (ports, ranges, comma-separated)")
+                    .with_initial_text(&config.random_port_candidates)
+                    .validate_with(|value: &String| {
+                        crate::random_port::parse_candidates(value)
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
+                    })
+                    .interact_text()?;
+            }
+            Some(6) => {
                 show(&config);
                 continue;
             }
@@ -160,8 +175,9 @@ fn optional_input(prompt: &str, existing: Option<&str>) -> Result<Option<String>
     Ok((!value.trim().is_empty()).then(|| value.trim().to_string()))
 }
 
-async fn edit_backend(existing: Option<&Backend>) -> Result<Backend> {
+async fn edit_backend(existing: Option<&Backend>, candidates: &str) -> Result<Backend> {
     let theme = ColorfulTheme::default();
+    println!("Use {{PORT}} (any letter case, e.g. {{port}}) in URLs, API keys, and commands for the session's random port.");
     let url: String = Input::with_theme(&theme)
         .with_prompt("Backend base URL (include /v1 if required)")
         .with_initial_text(
@@ -170,7 +186,7 @@ async fn edit_backend(existing: Option<&Backend>) -> Result<Backend> {
                 .unwrap_or("http://127.0.0.1:8000/v1"),
         )
         .validate_with(|value: &String| -> std::result::Result<(), &str> {
-            match reqwest::Url::parse(value) {
+            match reqwest::Url::parse(&crate::random_port::substitute(value, 1024)) {
                 Ok(u)
                     if matches!(u.scheme(), "http" | "https")
                         && u.host_str().is_some()
@@ -220,6 +236,9 @@ async fn edit_backend(existing: Option<&Backend>) -> Result<Backend> {
         _ => {
             let old = existing.and_then(|b| b.access.as_ref());
             println!("Commands run via /bin/sh -c without interactive input.");
+            println!(
+                "{{PORT}} (case-insensitive) uses the same random port as the URL and credentials."
+            );
             let command = Input::<String>::with_theme(&theme)
                 .with_prompt("Access command")
                 .with_initial_text(old.map(|a| a.command.as_str()).unwrap_or(""))
@@ -281,7 +300,7 @@ async fn edit_backend(existing: Option<&Backend>) -> Result<Backend> {
         .interact()?
     {
         println!("Testing connection and model discovery...");
-        match test_connection(&backend).await {
+        match test_connection(&backend, candidates).await {
             Ok(models) => {
                 println!("Connection successful. Available models:");
                 for model in &models {
@@ -305,10 +324,15 @@ async fn edit_backend(existing: Option<&Backend>) -> Result<Backend> {
 
 // Use the same access lifecycle and authenticated discovery as an agent launch.
 // Passing no override ensures even an explicitly configured model is tested remotely.
-async fn test_connection(backend: &Backend) -> Result<Vec<String>> {
-    let mut access = crate::access::AccessSession::new(backend.access.clone());
+async fn test_connection(backend: &Backend, candidates: &str) -> Result<Vec<String>> {
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let backend = if backend.uses_random_port() {
+        backend.with_port(crate::random_port::choose(candidates)?)
+    } else {
+        backend.clone()
+    };
+    let mut access = crate::access::AccessSession::new(backend.access.clone());
     let result = tokio::select! {
         result = async {
             access.start(&backend.url).await?;
@@ -335,6 +359,7 @@ fn masked_key(value: &str) -> String {
 fn input_api_key(prompt: &str, allow_empty: bool) -> Result<String> {
     let term = Term::stderr();
     anyhow::ensure!(term.is_term(), "not a terminal");
+    term.write_line("Use {PORT} (any letter case, e.g. {port}) for the session's random port.")?;
     let mut prefix = String::new();
     ColorfulTheme::default().format_password_prompt(&mut prefix, prompt)?;
     let mut value = String::new();
@@ -429,6 +454,7 @@ fn edit_search(existing: &SearchProvider) -> Result<SearchProvider> {
     let provider = match choice {
         0 => SearchProvider::Public,
         1 => {
+            println!("Use {{PORT}} (any letter case, e.g. {{port}}) in the URL for the session's random port.");
             let current = match existing {
                 SearchProvider::Searxng { url } => url.as_str(),
                 _ => "http://localhost:8080",
@@ -475,6 +501,10 @@ fn edit_search(existing: &SearchProvider) -> Result<SearchProvider> {
 }
 
 fn show(config: &Config) {
+    println!(
+        "\nRandom port candidates: {}",
+        config.random_port_candidates
+    );
     println!("\nWeb search: {:?}", config.web_search);
     for (name, backend) in &config.backends {
         let auth = match &backend.auth {
@@ -574,7 +604,14 @@ mod tests {
                     cleanup: Some(format!("touch '{}'", marker.display())),
                 }),
             };
-            let result = test_connection(&backend).await;
+            // The backend already owns this sole candidate. With no placeholder,
+            // connection testing must bypass random-port availability checks.
+            let occupied = reqwest::Url::parse(&backend.url)
+                .unwrap()
+                .port()
+                .unwrap()
+                .to_string();
+            let result = test_connection(&backend, &occupied).await;
             if status.is_success() {
                 assert_eq!(result.unwrap(), ["remote/model"]);
             } else {

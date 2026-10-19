@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tty
 
 
 def main():
@@ -17,6 +18,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="codeport-tui-") as directory:
         config = Path(directory) / "settings" / "credential.json"
         master, slave = pty.openpty()
+        tty.setraw(slave)
         child = subprocess.Popen([str(binary), "--config", str(config), "-cfg"],
                                  stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
@@ -48,11 +50,22 @@ def main():
 
         try:
             expect("Add backend")
+            send(b"\x1b[B" * 5 + b"\r")
+            expect("Random port candidates (ports, ranges, comma-separated)")
+            expect("1024-65535")
+            # Replace the initial text, reject an invalid range, then save a union.
+            send(b"\x7f" * len("1024-65535") + b"9000-8000\r")
+            expect("Port range start must not exceed its end")
+            send(b"\x7f" * len("1024-65535") + b"8000 - 8100,9000\r")
+            expect("Saved to")
+            expect("Add backend")
             send()
             expect("Backend name")
             send(b"smoke\r")
+            expect("Use {PORT}")
             expect("Backend base URL")
-            send()
+            expect("http://127.0.0.1:8000/v1")
+            send(b"\x7f" * len("http://127.0.0.1:8000/v1") + b"http://127.0.0.1:{PoRt}/v1\r")
             expect("Backend API protocol")
             send()
             expect("Default model")
@@ -116,13 +129,15 @@ def main():
                             raise
             assert child.returncode == 0
             data = json.loads(config.read_text())
+            assert data["random_port_candidates"] == "8000 - 8100,9000"
             assert data["agents"]["pi"]["backend"] == "smoke"
             assert data["backends"]["smoke"]["model"] is None
+            assert data["backends"]["smoke"]["url"] == "http://127.0.0.1:{PoRt}/v1"
             assert data["backends"]["smoke"]["auth"]["token"] == "secret-key"
             assert data["web_search"]["api_key"] == "brave-secret"
             assert config.stat().st_mode & 0o777 == 0o600
             assert config.parent.stat().st_mode & 0o777 == 0o700
-            print("PASS TUI: add backend, masked API keys, backspace, keep existing key, "
+            print("PASS TUI: random port candidates, add backend, masked API keys, backspace, keep existing key, "
                   "blank model, bind Pi, save 0600 credentials, exit")
         finally:
             if child.poll() is None:

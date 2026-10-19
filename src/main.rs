@@ -6,6 +6,7 @@ mod classifier;
 mod config;
 mod hosted_search;
 mod protocol;
+mod random_port;
 mod tui;
 mod web_search;
 
@@ -97,16 +98,24 @@ async fn run(cli: Cli) -> Result<u8> {
         .or(backend.model.as_deref())
         .filter(|m| !m.is_empty())
         .map(str::to_owned);
-    let mut access = access::AccessSession::new(backend.access.clone());
     // Install signal handlers before any access command is started.
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    // Assign immediately before starting backend access. Fixed configurations
+    // need no local listening port, even if all candidates are occupied.
+    let (backend, search) = if backend.uses_random_port() || config.web_search.uses_random_port() {
+        let port = random_port::choose(&config.random_port_candidates)?;
+        (backend.with_port(port), config.web_search.with_port(port))
+    } else {
+        (backend, config.web_search)
+    };
+    let mut access = access::AccessSession::new(backend.access.clone());
     let result = launch(
         &agent,
         &cli.args,
         backend,
         model,
-        config.web_search,
+        search,
         &mut access,
         (&mut terminate, &mut interrupt),
     )
