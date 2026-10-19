@@ -306,7 +306,7 @@ fn opencode_survives_access_death_and_failed_reconnections() {
          sleep 0.2\n\
          exit 23",
         "printf x >> \"$ACCESS_STARTS\"\n\
-         case $(wc -c < \"$ACCESS_STARTS\") in\n\
+         case $(( $(wc -c < \"$ACCESS_STARTS\") )) in\n\
            1) while [ ! -f \"$AGENT_READY\" ]; do sleep 0.05; done; kill -KILL $$ ;;\n\
            2|3) sleep 0.1; exit 255 ;;\n\
            *) touch \"$ACCESS_RESTORED\"; exec sleep 60 ;;\n\
