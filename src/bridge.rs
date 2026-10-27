@@ -89,7 +89,7 @@ impl Bridge {
             .with_state(state.clone());
         let task = tokio::spawn(async move {
             if let Err(error) = axum::serve(listener, app).await {
-                eprintln!("codeport: local API bridge stopped: {error}");
+                eprintln!("wmlm: local API bridge stopped: {error}");
             }
         });
         Ok(Self {
@@ -122,7 +122,7 @@ async fn catalog(state: &BridgeState) -> Result<&Vec<Value>> {
         .get_or_try_init(|| async {
             if let Some(model) = &state.model {
                 return Ok(vec![
-                    json!({"id":model,"object":"model","created":0,"owned_by":"codeport"}),
+                    json!({"id":model,"object":"model","created":0,"owned_by":"wmlm"}),
                 ]);
             }
             fetch_catalog(state).await
@@ -203,7 +203,7 @@ async fn models(State(state): State<Arc<BridgeState>>, headers: HeaderMap) -> Re
         json!({
         "slug": model,
         "display_name": model,
-        "description": "Model configured through codeport",
+        "description": "Model configured through wmlm",
         "default_reasoning_level": "none",
         "supported_reasoning_levels": [],
         "shell_type": "unified_exec",
@@ -514,7 +514,7 @@ async fn review_tools(state: &BridgeState, review: &Review, tools: &[Value]) -> 
     match tokio::time::timeout(Duration::from_secs(60), operation).await {
         Ok(Ok(results)) => results,
         Ok(Err(_)) => {
-            eprintln!("codeport: tool review failed; proposed actions remain blocked");
+            eprintln!("wmlm: tool review failed; proposed actions remain blocked");
             classifier::unavailable("error")
         }
         Err(_) => classifier::unavailable("timeout"),
@@ -549,7 +549,7 @@ fn sse_response(body: Body) -> Response {
 fn error(status: StatusCode, message: &str) -> Response {
     (
         status,
-        Json(json!({"type":"error","error":{"type":"codeport_error","message":message}})),
+        Json(json!({"type":"error","error":{"type":"wmlm_error","message":message}})),
     )
         .into_response()
 }
@@ -557,7 +557,7 @@ fn error(status: StatusCode, message: &str) -> Response {
 fn stream_error(message: &str) -> Bytes {
     Bytes::from(format!(
         "event: error\ndata: {}\n\n",
-        json!({"type":"error","error":{"type":"codeport_error","message":message}})
+        json!({"type":"error","error":{"type":"wmlm_error","message":message}})
     ))
 }
 

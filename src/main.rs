@@ -15,7 +15,11 @@ use clap::Parser;
 use std::process::ExitCode;
 
 #[derive(Parser)]
-#[command(version, about = "Launch coding agents with your own LLM backend")]
+#[command(
+    name = "wmlm",
+    version,
+    about = "Launch coding agents with your own LLM backend"
+)]
 struct Cli {
     /// Open interactive configuration (also accepts -cfg)
     #[arg(long)]
@@ -52,7 +56,7 @@ async fn main() -> ExitCode {
     match run(cli).await {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            eprintln!("codeport: {error:#}");
+            eprintln!("wmlm: {error:#}");
             ExitCode::FAILURE
         }
     }
@@ -65,7 +69,7 @@ async fn run(cli: Cli) -> Result<u8> {
     }
     let agent = cli
         .agent
-        .context("specify an agent (pi, opencode, codex, claude), or run codeport -cfg")?;
+        .context("specify an agent (pi, opencode, codex, claude), or run wmlm -cfg")?;
     let agent = if agent == "claude-code" {
         "claude".to_owned()
     } else {
@@ -81,11 +85,11 @@ async fn run(cli: Cli) -> Result<u8> {
         .backend
         .as_deref()
         .or_else(|| binding.map(|b| b.backend.as_str()))
-        .context("no backend selected; run codeport -cfg or supply --backend NAME")?;
+        .context("no backend selected; run wmlm -cfg or supply --backend NAME")?;
     let backend = config
         .backends
         .get(backend_name)
-        .with_context(|| format!("backend {backend_name:?} does not exist; run codeport -cfg"))?
+        .with_context(|| format!("backend {backend_name:?} does not exist; run wmlm -cfg"))?
         .clone();
     let model = cli
         .model
@@ -176,17 +180,17 @@ async fn launch(
         status = child.wait() => status?,
         never = access.supervise(&bridge) => match never {},
         _ = terminate.recv() => {
-            eprintln!("codeport: received SIGTERM; stopping {agent}");
+            eprintln!("wmlm: received SIGTERM; stopping {agent}");
             child.shutdown(libc::SIGTERM).await;
             return Ok(143);
         }
         _ = interrupt.recv() => {
-            eprintln!("codeport: received SIGINT; stopping {agent}");
+            eprintln!("wmlm: received SIGINT; stopping {agent}");
             child.shutdown(libc::SIGINT).await;
             return Ok(130);
         }
     };
-    eprintln!("codeport: {agent} exited with {status}");
+    eprintln!("wmlm: {agent} exited with {status}");
     drop(child);
     // Keep temporary agent configuration and the proxy alive until the child exits.
     drop(launch);

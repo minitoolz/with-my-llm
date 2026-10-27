@@ -41,7 +41,7 @@ fn fixture_for_agent(
             "cleanup":format!("printf cleaned > {}",quote(&directory.path().join("cleanup")))
         }}},"agents":{agent_name:{"backend":"test"}}
     })).unwrap()).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_codeport"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_wmlm"));
     command
         .arg("--config")
         .arg(&config)
@@ -105,8 +105,7 @@ fn preserves_agent_status_and_cleans_access() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("codeport: codex exited with exit status: 23"),
+        String::from_utf8_lossy(&output.stderr).contains("wmlm: codex exited with exit status: 23"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -332,7 +331,7 @@ fn opencode_survives_access_death_and_failed_reconnections() {
     );
     assert!(stderr.contains("backend access restored"), "{stderr}");
     assert!(
-        stderr.contains("codeport: opencode exited with exit status: 23"),
+        stderr.contains("wmlm: opencode exited with exit status: 23"),
         "{stderr}"
     );
     assert_eq!(
@@ -447,7 +446,7 @@ fn sigterm_during_preparation_runs_cleanup() {
 
 #[test]
 fn cfg_alias_and_forwarding_help() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codeport"))
+    let output = Command::new(env!("CARGO_BIN_EXE_wmlm"))
         .args(["-cfg", "--help"])
         .output()
         .unwrap();
@@ -618,7 +617,7 @@ async fn all_agents_launch_with_discovered_default_model() {
             .unwrap(),
         )
         .unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_codeport"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_wmlm"));
         command
             .arg("--config")
             .arg(config)
@@ -642,9 +641,9 @@ async fn all_agents_launch_with_discovered_default_model() {
         );
         if agent_name == "opencode" {
             let config: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(config["model"], "codeport/local/first");
+            assert_eq!(config["model"], "wmlm/local/first");
             assert_eq!(
-                config["provider"]["codeport"]["models"]["local/second"]["name"],
+                config["provider"]["wmlm"]["models"]["local/second"]["name"],
                 "local/second"
             );
         } else {

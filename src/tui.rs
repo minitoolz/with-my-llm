@@ -13,7 +13,7 @@ pub async fn run(alternate_path: Option<&std::path::Path>) -> Result<()> {
     };
     let mut config = Config::load_from(&path)?;
     let theme = ColorfulTheme::default();
-    println!("\n  codeport · backend configuration\n");
+    println!("\n  wmlm · backend configuration\n");
     println!("Credentials: {} (permissions: 0600)", path.display());
     println!("Changes are saved after each completed action.\n");
     loop {

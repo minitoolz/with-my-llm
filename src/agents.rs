@@ -26,9 +26,7 @@ pub struct AgentLaunch {
 /// skills and other persistent resources. Never restore a global config after
 /// exit: another Codex process may have legitimately changed it meanwhile.
 fn isolated_codex_home(source: &Path) -> Result<TempDir> {
-    let home = tempfile::Builder::new()
-        .prefix("codeport-codex-")
-        .tempdir()?;
+    let home = tempfile::Builder::new().prefix("wmlm-codex-").tempdir()?;
     let entries = match std::fs::read_dir(source) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(home),
@@ -66,7 +64,7 @@ impl AgentLaunch {
     pub fn take_command(&mut self) -> Command {
         std::mem::replace(
             &mut self.command,
-            Command::new("codeport-command-already-taken"),
+            Command::new("wmlm-command-already-taken"),
         )
     }
 }
@@ -145,7 +143,7 @@ pub fn prepare(
     });
     let mut extension = None;
     let mut codex_home = None;
-    command.env("CODEPORT_API_KEY", token);
+    command.env("WMLM_API_KEY", token);
     match agent {
         "codex" => {
             let source = std::env::var_os("CODEX_HOME")
@@ -157,7 +155,7 @@ pub fn prepare(
             command.env("CODEX_HOME", home.path());
             codex_home = Some(home);
             if upstream_protocol != Protocol::Responses {
-                eprintln!("codeport: protocol conversion disables Codex reasoning and provider-hosted search for this session");
+                eprintln!("wmlm: protocol conversion disables Codex reasoning and provider-hosted search for this session");
                 for setting in [
                     "model_reasoning_effort=\"none\"",
                     "model_reasoning_summary=\"none\"",
@@ -170,13 +168,13 @@ pub fn prepare(
             // CLI overrides apply on top of the private copy of user settings.
             // JSON quoted strings are also valid TOML basic strings for these values.
             for setting in [
-                "model_provider=\"codeport\"".to_owned(),
-                "model_providers.codeport.name=\"codeport\"".to_owned(),
-                format!("model_providers.codeport.base_url={}", json!(api)),
-                "model_providers.codeport.env_key=\"CODEPORT_API_KEY\"".to_owned(),
-                "model_providers.codeport.wire_api=\"responses\"".to_owned(),
-                "model_providers.codeport.requires_openai_auth=false".to_owned(),
-                "model_providers.codeport.supports_websockets=false".to_owned(),
+                "model_provider=\"wmlm\"".to_owned(),
+                "model_providers.wmlm.name=\"wmlm\"".to_owned(),
+                format!("model_providers.wmlm.base_url={}", json!(api)),
+                "model_providers.wmlm.env_key=\"WMLM_API_KEY\"".to_owned(),
+                "model_providers.wmlm.wire_api=\"responses\"".to_owned(),
+                "model_providers.wmlm.requires_openai_auth=false".to_owned(),
+                "model_providers.wmlm.supports_websockets=false".to_owned(),
             ] {
                 command.args(["-c", &setting]);
             }
@@ -194,7 +192,7 @@ pub fn prepare(
                 "WebFetch",
             ]);
             if upstream_protocol != Protocol::Anthropic {
-                eprintln!("codeport: protocol conversion disables Claude extended thinking and explicit effort for this session");
+                eprintln!("wmlm: protocol conversion disables Claude extended thinking and explicit effort for this session");
                 command
                     .env("MAX_THINKING_TOKENS", "0")
                     .env("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING", "1")
@@ -230,7 +228,7 @@ pub fn prepare(
         }
         "pi" => {
             let mut file = tempfile::Builder::new()
-                .prefix("codeport-")
+                .prefix("wmlm-")
                 .suffix(".ts")
                 .tempfile()
                 .context("Creating temporary Pi provider extension")?;
@@ -239,7 +237,7 @@ pub fn prepare(
             file.flush()?;
             command.arg("--extension").arg(file.path());
             if let Some(model) = selected_model {
-                command.args(["--provider", "codeport", "--model", model]);
+                command.args(["--provider", "wmlm", "--model", model]);
             }
             extension = Some(file);
         }
@@ -257,11 +255,11 @@ fn opencode_config(api: &str, token: &str, model: Option<&str>, model_ids: &[&st
     if let Some(model) = model {
         json!({
             "$schema":"https://opencode.ai/config.json",
-            "enabled_providers":["codeport"],
-            "model":format!("codeport/{model}"),
-            "small_model":format!("codeport/{model}"),
-            "provider":{"codeport":{
-                "npm":"@ai-sdk/openai-compatible", "name":"codeport",
+            "enabled_providers":["wmlm"],
+            "model":format!("wmlm/{model}"),
+            "small_model":format!("wmlm/{model}"),
+            "provider":{"wmlm":{
+                "npm":"@ai-sdk/openai-compatible", "name":"wmlm",
                 "options":{"baseURL":api,"apiKey":token},
                 "models":model_ids.iter().map(|id| ((*id).to_owned(), json!({"name":id,"tool_call":true}))).collect::<serde_json::Map<String, Value>>()
             }}
@@ -294,7 +292,7 @@ fn pi_extension(base: &str, api: &str, token: &str, model_ids: &[&str]) -> Strin
                 "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},
                 "contextWindow":128000,"maxTokens":16384})).collect::<Vec<_>>()
         });
-        script.push_str(&format!("  pi.registerProvider('codeport', {provider});\n"));
+        script.push_str(&format!("  pi.registerProvider('wmlm', {provider});\n"));
     }
     // Event exceptions are caught by Pi, so routing failures must terminate the
     // child explicitly. Re-register the selected model under our provider while
@@ -308,24 +306,24 @@ fn pi_extension(base: &str, api: &str, token: &str, model_ids: &[&str]) -> Strin
     ));
     script.push_str(r#"  let routing = false;
   const fail = (error) => {
-    process.stderr.write(`codeport: ${error instanceof Error ? error.message : error}\n`);
+    process.stderr.write(`wmlm: ${error instanceof Error ? error.message : error}\n`);
     process.exit(2);
   };
   const route = async (_event, ctx) => {
-    if (routing || !ctx.model || ctx.model.provider === 'codeport') return;
+    if (routing || !ctx.model || ctx.model.provider === 'wmlm') return;
     routing = true;
     try {
       const selected = ctx.model;
       if (!['openai-completions', 'openai-responses', 'anthropic-messages'].includes(selected.api)) {
-        fail(`Cannot route Pi API ${selected.api}; select an OpenAI/Anthropic compatible model or configure a model in codeport`);
+        fail(`Cannot route Pi API ${selected.api}; select an OpenAI/Anthropic compatible model or configure a model in wmlm`);
       }
       const baseUrl = selected.api === 'anthropic-messages' ? origin : api;
-      pi.registerProvider('codeport', {
+      pi.registerProvider('wmlm', {
         baseUrl, apiKey: token, api: selected.api,
         headers: { Authorization: `Bearer ${token}` },
-        models: [{ ...selected, provider: 'codeport', baseUrl }]
+        models: [{ ...selected, provider: 'wmlm', baseUrl }]
       });
-      const model = ctx.modelRegistry.find('codeport', selected.id);
+      const model = ctx.modelRegistry.find('wmlm', selected.id);
       if (!model || !(await pi.setModel(model))) fail('Unable to configure selected Pi model for the local bridge');
     } catch (error) {
       fail(error);
@@ -571,18 +569,18 @@ mod tests {
                 let config: Value =
                     serde_json::from_str(&env(&launch.command, "OPENCODE_CONFIG_CONTENT").unwrap())
                         .unwrap();
-                assert_eq!(config["enabled_providers"], json!(["codeport"]));
-                assert_eq!(config["model"], "codeport/local/first");
-                assert_eq!(config["small_model"], "codeport/local/first");
+                assert_eq!(config["enabled_providers"], json!(["wmlm"]));
+                assert_eq!(config["model"], "wmlm/local/first");
+                assert_eq!(config["small_model"], "wmlm/local/first");
                 assert_eq!(
-                    config["provider"]["codeport"]["models"]
+                    config["provider"]["wmlm"]["models"]
                         .as_object()
                         .unwrap()
                         .len(),
                     2
                 );
                 assert_eq!(
-                    config["provider"]["codeport"]["models"]["local/second"]["name"],
+                    config["provider"]["wmlm"]["models"]["local/second"]["name"],
                     "local/second"
                 );
             } else {
@@ -590,12 +588,12 @@ mod tests {
                     std::fs::read_to_string(launch._extension.as_ref().unwrap().path()).unwrap();
                 let provider = script
                     .lines()
-                    .find(|line| line.contains("registerProvider('codeport'"))
+                    .find(|line| line.contains("registerProvider('wmlm'"))
                     .unwrap();
                 let provider: Value = serde_json::from_str(
                     provider
                         .trim()
-                        .strip_prefix("pi.registerProvider('codeport', ")
+                        .strip_prefix("pi.registerProvider('wmlm', ")
                         .unwrap()
                         .strip_suffix(");")
                         .unwrap(),
@@ -629,7 +627,7 @@ mod tests {
                         &env(&launch.command, "OPENCODE_CONFIG_CONTENT").unwrap(),
                     )
                     .unwrap();
-                    assert_eq!(config["model"], format!("codeport/{expected}"));
+                    assert_eq!(config["model"], format!("wmlm/{expected}"));
                 } else {
                     let args: Vec<_> = launch.command.get_args().collect();
                     assert!(args.windows(2).any(|a| a == ["--model", expected]));
@@ -657,9 +655,9 @@ mod tests {
             Some("local/model"),
             &["local/model"],
         );
-        assert_eq!(config["model"], "codeport/local/model");
+        assert_eq!(config["model"], "wmlm/local/model");
         assert_eq!(
-            config["provider"]["codeport"]["models"]["local/model"]["tool_call"],
+            config["provider"]["wmlm"]["models"]["local/model"]["tool_call"],
             true
         );
     }

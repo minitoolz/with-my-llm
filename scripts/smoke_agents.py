@@ -2,7 +2,7 @@
 """Opt-in installed-agent smoke checks using loopback mock APIs, no real tokens.
 
 Usage: python3 scripts/smoke_agents.py [codex|claude|all]
-       python3 scripts/smoke_agents.py --launcher target/debug/codeport
+       python3 scripts/smoke_agents.py --launcher target/debug/wmlm
 Records sanitized request shapes (not user prompts/config) to stdout.
 No model backend or paid API is contacted. HTTP proxy settings also point to the
 mock, which refuses external proxy requests. Pi/OpenCode require separate tests.
@@ -17,8 +17,8 @@ import sys
 import tempfile
 import threading
 
-TOKEN = "codeport-local-smoke-token"
-ANSWER = "CODEPORT_SMOKE_OK"
+TOKEN = "wmlm-local-smoke-token"
+ANSWER = "WMLM_SMOKE_OK"
 
 
 def event(name, data):
@@ -86,7 +86,7 @@ class Mock(http.server.BaseHTTPRequestHandler):
             if "/chat/completions" in self.path:
                 messages = body.get("messages", [])
                 results = [m for m in messages if m.get("role") == "tool"]
-                self.server.tool_returned = len(results) >= 2 and all("CODEPORT_TOOL_OK" in json.dumps(result) for result in results)
+                self.server.tool_returned = len(results) >= 2 and all("WMLM_TOOL_OK" in json.dumps(result) for result in results)
                 if len(results) >= 2:
                     delta, reason = {"content": ANSWER}, "stop"
                 else:
@@ -96,7 +96,7 @@ class Mock(http.server.BaseHTTPRequestHandler):
                         if name is None:
                             self.send_error(400, "Expected a declared exec_command tool")
                             return
-                        arguments = {"cmd": "printf CODEPORT_TOOL_OK", "max_output_tokens": 50}
+                        arguments = {"cmd": "printf WMLM_TOOL_OK", "max_output_tokens": 50}
                     else:
                         name, arguments = "Read", {"file_path": self.server.fixture if not results else self.server.fixture + ".second"}
                     delta, reason = {"tool_calls": [{"index": 0, "id": f"call_smoke_{len(results)}", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}]}, "tool_calls"
@@ -122,28 +122,28 @@ def run_agent(agent, launcher=None):
     if not binary:
         print(f"SKIP {agent}: executable not installed")
         return True
-    with tempfile.TemporaryDirectory(prefix="codeport-smoke-") as directory:
+    with tempfile.TemporaryDirectory(prefix="wmlm-smoke-") as directory:
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Mock)
         server.captured = []
         server.agent = agent
         server.fixture = str(Path(directory) / "fixture.txt")
         server.tool_returned = False
-        Path(server.fixture).write_text("CODEPORT_TOOL_OK")
-        Path(server.fixture + ".second").write_text("CODEPORT_TOOL_OK")
+        Path(server.fixture).write_text("WMLM_TOOL_OK")
+        Path(server.fixture + ".second").write_text("WMLM_TOOL_OK")
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         origin = f"http://127.0.0.1:{server.server_port}"
         # Only retain OS execution variables; never inherit API keys/tokens.
         env = {k: os.environ[k] for k in ("PATH", "HOME", "USER", "TMPDIR", "LANG") if k in os.environ}
         env.update({"HTTP_PROXY": origin, "HTTPS_PROXY": origin, "ALL_PROXY": origin,
-                    "NO_PROXY": "127.0.0.1,localhost", "CODEPORT_API_KEY": TOKEN})
+                    "NO_PROXY": "127.0.0.1,localhost", "WMLM_API_KEY": TOKEN})
         if agent == "codex":
-            settings = {"model_provider": "codeport", "model_providers.codeport.name": "codeport",
-                        "model_providers.codeport.base_url": origin + "/v1",
-                        "model_providers.codeport.env_key": "CODEPORT_API_KEY",
-                        "model_providers.codeport.wire_api": "responses",
-                        "model_providers.codeport.requires_openai_auth": False,
-                        "model_providers.codeport.supports_websockets": False}
+            settings = {"model_provider": "wmlm", "model_providers.wmlm.name": "wmlm",
+                        "model_providers.wmlm.base_url": origin + "/v1",
+                        "model_providers.wmlm.env_key": "WMLM_API_KEY",
+                        "model_providers.wmlm.wire_api": "responses",
+                        "model_providers.wmlm.requires_openai_auth": False,
+                        "model_providers.wmlm.supports_websockets": False}
             command = [binary, "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
                        "--skip-git-repo-check", "--model", "gpt-5.4", "--json"]
             for key, value in settings.items():
@@ -159,16 +159,16 @@ def run_agent(agent, launcher=None):
                 # The cross-protocol adapter must override this for the session.
                 env["CLAUDE_CODE_EFFORT_LEVEL"] = "high"
             config_path = Path(directory) / "credential.json"
-            config_path.write_text(json.dumps({"backends": {"smoke": {"url": origin, "protocol": "chat_completions", "model": "codeport-smoke-model", "auth": {"type": "bearer", "token": TOKEN}}}, "agents": {agent: {"backend": "smoke"}}}))
+            config_path.write_text(json.dumps({"backends": {"smoke": {"url": origin, "protocol": "chat_completions", "model": "wmlm-smoke-model", "auth": {"type": "bearer", "token": TOKEN}}}, "agents": {agent: {"backend": "smoke"}}}))
             config_path.chmod(0o600)
             if agent == "codex":
                 forwarded = ["exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--skip-git-repo-check", "--json"]
             else:
                 forwarded = command[1:] + ["--allowedTools", "Read"]
             command = [str(Path(launcher).resolve()), "--config", str(config_path), agent, "--"] + forwarded
-            command.extend(["--", "Use the requested local tool, then reply CODEPORT_SMOKE_OK."])
+            command.extend(["--", "Use the requested local tool, then reply WMLM_SMOKE_OK."])
         else:
-            command.append("Reply with CODEPORT_SMOKE_OK. Do not use tools.")
+            command.append("Reply with WMLM_SMOKE_OK. Do not use tools.")
         try:
             result = subprocess.run(command, env=env, cwd=directory, text=True, capture_output=True, timeout=45)
             ok = result.returncode == 0 and ANSWER in result.stdout and bool(server.captured) and (not launcher or server.tool_returned)
@@ -193,7 +193,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("agent", choices=["all", "codex", "claude"], nargs="?", default="all")
-    parser.add_argument("--launcher", help="Test built codeport through Chat Completions, including a local tool roundtrip")
+    parser.add_argument("--launcher", help="Test built wmlm through Chat Completions, including a local tool roundtrip")
     options = parser.parse_args()
     choice = options.agent
     if choice not in ("all", "codex", "claude"):

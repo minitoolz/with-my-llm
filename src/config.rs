@@ -197,8 +197,8 @@ pub struct AgentBinding {
 pub fn config_path() -> Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
-        .context("HOME is not set; cannot locate codeport configuration")?;
-    Ok(PathBuf::from(home).join(".config/codeport/credential.json"))
+        .context("HOME is not set; cannot locate wmlm configuration")?;
+    Ok(PathBuf::from(home).join(".config/wmlm/credential.json"))
 }
 
 impl Config {
@@ -464,10 +464,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "codeport-config-test-{}-{nonce}",
-            std::process::id()
-        ));
+        let directory =
+            std::env::temp_dir().join(format!("wmlm-config-test-{}-{nonce}", std::process::id()));
         let path = directory.join("credential.json");
         let mut config = Config::default();
         config.save_at(&path).unwrap();

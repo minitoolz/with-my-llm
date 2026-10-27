@@ -205,7 +205,11 @@ async fn download(mut url: Url) -> Result<(Url, String, String)> {
             .resolve_to_addrs(host, &addresses)
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(20))
-            .user_agent("Codeport/0.1 (public web tools)")
+            .user_agent(concat!(
+                "with-my-llm/",
+                env!("CARGO_PKG_VERSION"),
+                " (public web tools)"
+            ))
             .build()?;
         let mut response = client
             .get(url.clone())
@@ -289,7 +293,7 @@ fn search_results(html: &str, count: usize) -> Result<Vec<Value>> {
     let document = Html::parse_document(html);
     let challenge =
         Selector::parse("#challenge-form, .anomaly-modal, form[action*='anomaly.js']").unwrap();
-    ensure!(document.select(&challenge).next().is_none(), "public search provider returned a bot challenge; retry later or configure SearXNG or Brave with codeport -cfg");
+    ensure!(document.select(&challenge).next().is_none(), "public search provider returned a bot challenge; retry later or configure SearXNG or Brave with wmlm -cfg");
     // Lite places each snippet in the row after its result link. Walk both in
     // document order so a missing/invalid result cannot shift snippet associations.
     let selector = Selector::parse("a.result-link, .result-snippet").unwrap();
@@ -321,7 +325,7 @@ fn search_results(html: &str, count: usize) -> Result<Vec<Value>> {
     }
     if results.is_empty() {
         let empty = Selector::parse(".no-results, .no-results__message").unwrap();
-        ensure!(!found_links && document.select(&empty).next().is_some(), "public search returned an unrecognized page or no usable result links; retry later or configure SearXNG or Brave with codeport -cfg");
+        ensure!(!found_links && document.select(&empty).next().is_some(), "public search returned an unrecognized page or no usable result links; retry later or configure SearXNG or Brave with wmlm -cfg");
     }
     results.truncate(count);
     Ok(results)

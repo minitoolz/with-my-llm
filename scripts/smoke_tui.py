@@ -14,8 +14,8 @@ import tty
 
 
 def main():
-    binary = Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/codeport").resolve()
-    with tempfile.TemporaryDirectory(prefix="codeport-tui-") as directory:
+    binary = Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/wmlm").resolve()
+    with tempfile.TemporaryDirectory(prefix="wmlm-tui-") as directory:
         config = Path(directory) / "settings" / "credential.json"
         master, slave = pty.openpty()
         tty.setraw(slave)

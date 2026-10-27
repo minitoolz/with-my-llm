@@ -105,7 +105,7 @@ impl AccessSession {
                                     match wait_without_reaping(group).await {
                                         Ok(()) => return,
                                         Err(error) => {
-                                            eprintln!("codeport: could not monitor backend access process: {error}; retrying");
+                                            eprintln!("wmlm: could not monitor backend access process: {error}; retrying");
                                             tokio::time::sleep(Duration::from_secs(1)).await;
                                         }
                                     }
@@ -114,7 +114,7 @@ impl AccessSession {
                         }
                         std::future::pending().await
                     } => {
-                        eprintln!("codeport: backend access process exited; restarting");
+                        eprintln!("wmlm: backend access process exited; restarting");
                     }
                     result = async {
                         if config.health_check_interval_secs == 0 {
@@ -125,7 +125,7 @@ impl AccessSession {
                     } => {
                         match result {
                             Ok(()) => continue,
-                            Err(error) => eprintln!("codeport: backend health check failed: {error}; restarting access"),
+                            Err(error) => eprintln!("wmlm: backend health check failed: {error}; restarting access"),
                         }
                     }
                 }
@@ -140,9 +140,9 @@ impl AccessSession {
             match self.start(&url).await {
                 Ok(()) => {
                     self.recovering = false;
-                    eprintln!("codeport: backend access restored");
+                    eprintln!("wmlm: backend access restored");
                 }
-                Err(error) => eprintln!("codeport: could not restart backend access: {error}"),
+                Err(error) => eprintln!("wmlm: could not restart backend access: {error}"),
             }
         }
     }
@@ -175,8 +175,8 @@ impl AccessSession {
                     let completed = matches!(result, Ok(Ok(())));
                     match result {
                         Ok(Ok(())) => {}
-                        Ok(Err(error)) => eprintln!("codeport: cleanup command error: {error}"),
-                        Err(_) => eprintln!("codeport: cleanup command timed out"),
+                        Ok(Err(error)) => eprintln!("wmlm: cleanup command error: {error}"),
+                        Err(_) => eprintln!("wmlm: cleanup command timed out"),
                     }
                     if let Some(group) = group {
                         signal_group(group, libc::SIGTERM);
@@ -186,13 +186,13 @@ impl AccessSession {
                     guard.0 = None;
                     match child.wait().await {
                         Ok(status) if completed && !status.success() => {
-                            eprintln!("codeport: cleanup command failed: {status}")
+                            eprintln!("wmlm: cleanup command failed: {status}")
                         }
-                        Err(error) => eprintln!("codeport: cleanup wait failed: {error}"),
+                        Err(error) => eprintln!("wmlm: cleanup wait failed: {error}"),
                         _ => {}
                     }
                 }
-                Err(error) => eprintln!("codeport: could not start cleanup command: {error}"),
+                Err(error) => eprintln!("wmlm: could not start cleanup command: {error}"),
             }
         }
     }

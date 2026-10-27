@@ -33,7 +33,7 @@ impl CustomTools {
     }
 }
 
-const SEARCH_TOOL: &str = "codeport_tool_search";
+const SEARCH_TOOL: &str = "wmlm_tool_search";
 
 fn raw_response_tools(request: &Value) -> Result<Vec<Value>> {
     let mut tools = request["tools"].as_array().cloned().unwrap_or_default();

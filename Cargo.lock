@@ -242,28 +242,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
-name = "codeport"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "axum",
- "bytes",
- "clap",
- "dialoguer",
- "futures-util",
- "libc",
- "reqwest",
- "scraper",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "uuid",
- "yoke-derive",
-]
-
-[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1978,6 +1956,28 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+
+[[package]]
+name = "with-my-llm"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "axum",
+ "bytes",
+ "clap",
+ "dialoguer",
+ "futures-util",
+ "libc",
+ "reqwest",
+ "scraper",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+ "yoke-derive",
+]
 
 [[package]]
 name = "writeable"
