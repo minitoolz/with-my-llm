@@ -40,6 +40,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - run: sh -n install-wmlm.sh
+      - run: python3 scripts/test_installer.py
       - run: cargo fmt --all -- --check
       - run: cargo test --locked
       - run: cargo build --locked
