@@ -29,7 +29,7 @@ Install from this repository, then open the configuration UI:
 
 ```sh
 cargo install --locked --path .
-wmlm -cfg
+wmlm cfg
 ```
 
 Choose **Add backend**, give it a name such as `local`, and enter its connection details:
@@ -53,9 +53,30 @@ Replace `opencode` with `pi`, `codex`, or `claude` to launch another agent. Forw
 wmlm claude -- --continue
 ```
 
+## Updating
+
+Check for a newer stable release or install it:
+
+```sh
+wmlm update --check
+wmlm update
+```
+
+Updates come from [minitoolz/with-my-llm GitHub Releases](https://github.com/minitoolz/with-my-llm/releases). The updater compares semantic versions and never downgrades or installs prereleases. Linux uses static musl binaries; macOS uses Darwin binaries. Both x86_64 and ARM64 are supported. Selection follows the running binary's architecture, including Intel binaries running under Rosetta.
+
+The updater downloads the matching archive and its `.sha256` file, verifies SHA-256, and stages the extracted binary beside the current executable before replacing it atomically. Download, checksum, or extraction failures leave the existing executable intact. Configuration and credentials are preserved. The installation directory must be writable; otherwise the command reports an error without attempting privilege escalation. Symlinked launchers update their resolved executable. Package-manager installations should be updated through their package manager.
+
+`--check` only reads release metadata and verifies that matching assets are listed; it does not download binaries or change files. A missing release, missing platform asset/checksum, or GitHub rate limit is reported as an error. Updates run only when explicitly requested.
+
+### Publishing releases
+
+Set the version in `Cargo.toml` and update `Cargo.lock`, then push a matching stable tag such as `v0.0.2`. CI validates the tag, runs its checks, and builds all four platform archives. Linux builds are checked for ELF interpreters and shared library dependencies. After all builds succeed, CI uploads the archives and their checksums to a draft GitHub Release and publishes it as latest. An interrupted draft upload can be retried; an already published release is never overwritten.
+
+The updater expects `wmlm-<target>.tar.gz` containing exactly one regular file named `wmlm`, plus `wmlm-<target>.tar.gz.sha256`. The checksum detects corrupted downloads; it is not an independent publisher signature.
+
 ## Configuration
 
-Run `wmlm -cfg` to edit backends, agent defaults, credentials, and web-search settings. After adding or editing a backend, you can test the connection before it is saved. The test starts any configured access command, requests the authenticated model list, displays available models, and cleans up the access session. It does not generate a completion. A failed test reports the error but still saves your settings so you can edit them later.
+Run `wmlm cfg` to edit backends, agent defaults, credentials, and web-search settings. After adding or editing a backend, you can test the connection before it is saved. The test starts any configured access command, requests the authenticated model list, displays available models, and cleans up the access session. It does not generate a completion. A failed test reports the error but still saves your settings so you can edit them later.
 
 A model supplied with `--model` overrides the agent's saved model, which overrides the backend's default.
 
@@ -78,7 +99,7 @@ If upgrading from codeport, copy your existing `~/.config/codeport/credential.js
 Configuration and credentials are stored in `~/.config/wmlm/credential.json`. Credentials are plaintext, protected by restricted file permissions. To use a separate configuration:
 
 ```sh
-wmlm --config ./credential.json -cfg
+wmlm cfg --config ./credential.json
 wmlm --config ./credential.json opencode
 ```
 
@@ -86,7 +107,7 @@ wmlm --config ./credential.json opencode
 
 with-my-llm can start a connection command before launching your agent and stop it when the session ends. For a backend already reachable from your machine, choose **Direct** under **Backend access**.
 
-For example, to reach a model server listening on port `8000` on an SSH host named `home-gpu`, edit the backend in `wmlm -cfg`:
+For example, to reach a model server listening on port `8000` on an SSH host named `home-gpu`, edit the backend in `wmlm cfg`:
 
 1. Set the backend URL to `http://127.0.0.1:18000/v1`.
 2. Choose **Command** under **Backend access** and enter:
@@ -106,7 +127,7 @@ After initial backend readiness, with-my-llm automatically restarts persistent a
 
 For backends with an access command, with-my-llm also checks the authenticated model-list API every 30 seconds. Checks bypass the cached catalog and require a successful HTTP response containing a nonempty, valid model list; each request times out after 15 seconds. A failed check runs the cleanup command, stops the old access process and its children, then relaunches the access command after a one-second delay. This applies to both command lifecycles and keeps the agent running during recovery. Failed restarts and process-monitoring errors are retried without terminating the agent, and polling resumes after readiness succeeds. Cleanup errors are reported but do not prevent restarting.
 
-Set **API health check interval in seconds** in `wmlm -cfg`, or set `health_check_interval_secs` in the backend's `access` configuration:
+Set **API health check interval in seconds** in `wmlm cfg`, or set `health_check_interval_secs` in the backend's `access` configuration:
 
 ```json
 "access": {
@@ -125,7 +146,7 @@ Use `0` to disable API polling, including for backends that do not support the m
 
 Claude's built-in `WebSearch` works with public DuckDuckGo search by default when using a Chat Completions or Responses backend. No search API key is needed. Native Anthropic backends keep their own search service.
 
-To change providers, open `wmlm -cfg` → **Configure web search**:
+To change providers, open `wmlm cfg` → **Configure web search**:
 
 - **Public:** DuckDuckGo, with no setup or API key.
 - **SearXNG:** enter your instance's base URL and enable JSON results in its `search.formats` setting.
@@ -160,7 +181,7 @@ wmlm codex -- -c model_context_window=65536
 ## Troubleshooting
 
 - **Agent or `wmlm` not found:** check that the executable is installed and on `PATH`.
-- **401 Unauthorized:** update the backend's credentials with `wmlm -cfg`.
+- **401 Unauthorized:** update the backend's credentials with `wmlm cfg`.
 - **Model not found:** check the exact model ID, including its namespace, and confirm the server has loaded it.
 - **Connection timeout:** check the backend URL, server availability, and any SSH or proxy command. A reachable port alone does not confirm valid credentials or a loaded model.
 - **Agent stops after a connection loss:** managed access recovery reports `backend access restored` when ready. Agent exits report their exit code or terminating signal; SIGTERM and SIGINT received by with-my-llm are reported separately. The launcher exits when the agent exits; an in-flight model request can fail during recovery. With **Direct** access, restart separately launched tunnels yourself or configure a managed access command.

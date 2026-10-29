@@ -19,7 +19,7 @@ def main():
         config = Path(directory) / "settings" / "credential.json"
         master, slave = pty.openpty()
         tty.setraw(slave)
-        child = subprocess.Popen([str(binary), "--config", str(config), "-cfg"],
+        child = subprocess.Popen([str(binary), "cfg", "--config", str(config)],
                                  stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
         buffer = b""

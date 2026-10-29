@@ -21,6 +21,21 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PYTHON'
+          import os, re, tomllib
+          with open("Cargo.toml", "rb") as manifest:
+              version = tomllib.load(manifest)["package"]["version"]
+          assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version), "Only stable releases are supported"
+          assert os.environ["RELEASE_TAG"] == f"v{version}", "Tag must match Cargo.toml version"
+          PYTHON
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -79,11 +94,74 @@ jobs:
       - name: Build native macOS binary
         if: runner.os == 'macOS'
         run: cargo build --locked --release --target "${{ matrix.target }}"
+      - name: Verify Linux binary is static
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          binary="target/${{ matrix.target }}/release/wmlm"
+          readelf -h "$binary"
+          if readelf -l "$binary" | grep INTERP >/dev/null; then
+            echo "Unexpected ELF interpreter" >&2
+            exit 1
+          fi
+          if readelf -d "$binary" | grep NEEDED >/dev/null; then
+            echo "Unexpected shared library dependency" >&2
+            exit 1
+          fi
       - name: Package binary
+        env:
+          COPYFILE_DISABLE: "1"
         shell: bash
         run: tar -czf "wmlm-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" wmlm
+      - name: Write archive checksum
+        env:
+          ARCHIVE: wmlm-${{ matrix.target }}.tar.gz
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, os
+          from pathlib import Path
+          archive = Path(os.environ["ARCHIVE"])
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          Path(f"{archive}.sha256").write_text(f"{digest}  {archive.name}\n")
+          PYTHON
       - uses: actions/upload-artifact@v4
         with:
           name: wmlm-${{ matrix.target }}
-          path: wmlm-${{ matrix.target }}.tar.gz
+          path: |
+            wmlm-${{ matrix.target }}.tar.gz
+            wmlm-${{ matrix.target }}.tar.gz.sha256
           if-no-files-found: error
+
+  release:
+    name: Publish stable release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [artifacts]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wmlm-*
+          path: dist
+          merge-multiple: true
+      - name: Publish binaries and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          test "$(find dist -name '*.tar.gz' | wc -l)" -eq 4
+          test "$(find dist -name '*.sha256' | wc -l)" -eq 4
+          (cd dist && sha256sum --check *.sha256)
+          if gh release view "$RELEASE_TAG" --json isDraft > release.json; then
+            python3 -c 'import json; assert json.load(open("release.json"))["isDraft"], "Refusing to modify an already published release"'
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes --title "$RELEASE_TAG"
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

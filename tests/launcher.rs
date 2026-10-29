@@ -445,13 +445,13 @@ fn sigterm_during_preparation_runs_cleanup() {
 }
 
 #[test]
-fn cfg_alias_and_forwarding_help() {
+fn cfg_subcommand_help() {
     let output = Command::new(env!("CARGO_BIN_EXE_wmlm"))
-        .args(["-cfg", "--help"])
+        .args(["cfg", "--help"])
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("--backend"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("--config"));
 }
 
 #[test]
@@ -657,4 +657,53 @@ async fn all_agents_launch_with_discovered_default_model() {
         }
     }
     server.abort();
+}
+
+#[test]
+fn update_help_and_invalid_options_do_not_launch_agents() {
+    let output = Command::new(env!("CARGO_BIN_EXE_wmlm"))
+        .args(["update", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("--check"));
+    let output = Command::new(env!("CARGO_BIN_EXE_wmlm"))
+        .args(["update", "--backend", "local"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn removed_cfg_flags_are_rejected() {
+    for flag in ["-cfg", "--cfg"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_wmlm"))
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+    }
+}
+
+#[test]
+fn cfg_accepts_config_on_either_side_and_rejects_agent_options() {
+    for args in [
+        vec!["--config", "/unused/settings.json", "cfg", "--help"],
+        vec!["cfg", "--config", "/unused/settings.json", "--help"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_wmlm"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_wmlm"))
+        .args(["--backend", "local", "cfg"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
 }

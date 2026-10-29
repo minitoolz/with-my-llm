@@ -8,24 +8,25 @@ mod hosted_search;
 mod protocol;
 mod random_port;
 mod tui;
+mod update;
 mod web_search;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use std::process::ExitCode;
 
 #[derive(Parser)]
 #[command(
     name = "wmlm",
     version,
-    about = "Launch coding agents with your own LLM backend"
+    about = "Launch coding agents with your own LLM backend",
+    subcommand_precedence_over_arg = true
 )]
 struct Cli {
-    /// Open interactive configuration (also accepts -cfg)
-    #[arg(long)]
-    cfg: bool,
+    #[command(subcommand)]
+    command: Option<ManagementCommand>,
     /// Use an alternate credential file
-    #[arg(long)]
+    #[arg(long, global = true)]
     config: Option<std::path::PathBuf>,
     /// Override this agent's default backend
     #[arg(long)]
@@ -40,19 +41,30 @@ struct Cli {
     args: Vec<String>,
 }
 
+#[derive(clap::Subcommand)]
+enum ManagementCommand {
+    /// Open interactive backend and agent configuration
+    Cfg,
+    /// Update wmlm from the latest stable GitHub release
+    Update(update::Options),
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
-    // clap supports conventional long options; keep the explicitly promised -cfg alias.
-    let mut argv: Vec<_> = std::env::args_os().collect();
-    for arg in argv.iter_mut().skip(1) {
-        if arg == "--" {
-            break;
-        }
-        if arg == "-cfg" {
-            *arg = "--cfg".into();
-        }
+    let cli = Cli::parse();
+    if cli.command.is_some()
+        && (cli.agent.is_some()
+            || cli.backend.is_some()
+            || cli.model.is_some()
+            || !cli.args.is_empty())
+    {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "cfg and update cannot be combined with agent launch arguments",
+            )
+            .exit();
     }
-    let cli = Cli::parse_from(argv);
     match run(cli).await {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
@@ -63,13 +75,20 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<u8> {
-    if cli.cfg {
-        tui::run(cli.config.as_deref()).await?;
-        return Ok(0);
+    match cli.command {
+        Some(ManagementCommand::Cfg) => {
+            tui::run(cli.config.as_deref()).await?;
+            return Ok(0);
+        }
+        Some(ManagementCommand::Update(options)) => {
+            update::run(options).await.context("update failed")?;
+            return Ok(0);
+        }
+        None => (),
     }
     let agent = cli
         .agent
-        .context("specify an agent (pi, opencode, codex, claude), or run wmlm -cfg")?;
+        .context("specify an agent (pi, opencode, codex, claude), or run wmlm cfg")?;
     let agent = if agent == "claude-code" {
         "claude".to_owned()
     } else {
@@ -85,11 +104,11 @@ async fn run(cli: Cli) -> Result<u8> {
         .backend
         .as_deref()
         .or_else(|| binding.map(|b| b.backend.as_str()))
-        .context("no backend selected; run wmlm -cfg or supply --backend NAME")?;
+        .context("no backend selected; run wmlm cfg or supply --backend NAME")?;
     let backend = config
         .backends
         .get(backend_name)
-        .with_context(|| format!("backend {backend_name:?} does not exist; run wmlm -cfg"))?
+        .with_context(|| format!("backend {backend_name:?} does not exist; run wmlm cfg"))?
         .clone();
     let model = cli
         .model
@@ -200,4 +219,29 @@ async fn launch(
         .code()
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(1))
         .clamp(0, 255) as u8)
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn config_path_is_global_and_forwarded_agent_arguments_stay_literal() {
+        for args in [
+            vec!["wmlm", "--config", "settings.json", "cfg"],
+            vec!["wmlm", "cfg", "--config", "settings.json"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(matches!(cli.command, Some(ManagementCommand::Cfg)));
+            assert_eq!(
+                cli.config.unwrap(),
+                std::path::PathBuf::from("settings.json")
+            );
+            assert!(cli.agent.is_none());
+        }
+        let cli = Cli::try_parse_from(["wmlm", "claude", "--", "-cfg", "update", "cfg"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.agent.as_deref(), Some("claude"));
+        assert_eq!(cli.args, ["-cfg", "update", "cfg"]);
+    }
 }
