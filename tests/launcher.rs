@@ -358,7 +358,9 @@ fn opencode_stays_running_when_access_cannot_reconnect() {
          exit 23",
         "printf x >> \"$ACCESS_STARTS\"\n\
          if [ \"$(wc -c < \"$ACCESS_STARTS\")\" -gt 1 ]; then exit 255; fi\n\
-         printf '%s' \"$$\" > \"$ACCESS_PID\"\n\
+         while [ ! -f \"$PUBLISH_ACCESS_PID\" ]; do sleep 0.05; done\n\
+         printf '%s' \"$$\" > \"$ACCESS_PID.tmp\"\n\
+         mv \"$ACCESS_PID.tmp\" \"$ACCESS_PID\"\n\
          exec sleep 60",
         true,
     );
@@ -366,17 +368,31 @@ fn opencode_stays_running_when_access_cannot_reconnect() {
     let heartbeat = directory.path().join("heartbeat");
     let starts = directory.path().join("access-starts");
     let pid_file = directory.path().join("access-pid");
+    let publish_pid = directory.path().join("publish-access-pid");
     let stop = directory.path().join("stop-agent");
     command
         .env("AGENT_READY", &ready)
         .env("AGENT_HEARTBEAT", &heartbeat)
         .env("ACCESS_STARTS", &starts)
         .env("ACCESS_PID", &pid_file)
+        .env("PUBLISH_ACCESS_PID", &publish_pid)
         .env("STOP_AGENT", &stop);
     let mut child = command.spawn().unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     while !ready.exists() || !heartbeat.exists() {
         assert!(Instant::now() < deadline, "OpenCode did not start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The fixture listener is ready before the access shell runs. Force the
+    // agent to start first, then wait for the shell to publish a complete PID.
+    assert!(!pid_file.exists());
+    fs::write(publish_pid, "ready").unwrap();
+    while !pid_file.exists() {
+        assert!(Instant::now() < deadline, "access did not publish its PID");
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "launcher exited before access was ready"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     let access_pid: i32 = fs::read_to_string(pid_file).unwrap().parse().unwrap();
