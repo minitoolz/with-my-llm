@@ -1,9 +1,16 @@
 name: CI
 
 on:
-  push:
   pull_request:
+    branches: [dev, main]
+  push:
+    tags: ['v*']
   workflow_dispatch:
+
+# Replace outdated PR runs without interrupting release or manual runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

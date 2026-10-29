@@ -76,6 +76,17 @@ preserve unrelated user changes and never commit them as part of your task.
   needed. Never delete `main` or `dev`. Disallowed branch names may be deleted
   for cleanup, but cannot be created or updated under the current rules.
 
+## CI triggers
+
+CI runs for pull requests targeting `dev` or `main`, release tags matching `v*`,
+and manual workflow runs. Ordinary branch pushes do not trigger a separate run;
+open a PR to run the required checks before merging. Pushing another commit to
+an open PR starts a new run and cancels its outdated run.
+
+All eight check and build jobs still run for each PR. Release and manual runs
+are not canceled by newer PR runs. Use a manual run when validation is needed
+before opening a PR. Required-check names and branch protections are unchanged.
+
 ## Local checks
 
 Before creating a commit, read [.github/workflows/ci.yml](.github/workflows/ci.yml) and run its checks locally:
