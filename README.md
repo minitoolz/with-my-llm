@@ -23,12 +23,31 @@ The command-line executable is named `wmlm` (with my LLM).
 
 ## Quick start
 
-You need Linux or macOS, Rust 1.86 or newer, an installed coding agent, and a running model API server. Have your server's URL, model ID, and any required credentials ready. Ensure the agent and Cargo's bin directory (usually `~/.cargo/bin`) are on `PATH`.
+You need Linux or macOS, an installed coding agent, and a running model API server. Have your server's URL, model ID, and any required credentials ready. Ensure the agent is on `PATH`.
 
-Install from this repository, then open the configuration UI:
+Install the latest stable release (requires `curl`, `tar`, and `sha256sum` or `shasum`):
 
 ```sh
-cargo install --locked --path .
+curl -fsSL https://raw.githubusercontent.com/minitoolz/with-my-llm/main/install-wmlm.sh | sh
+```
+
+The installer supports x86_64 and ARM64, verifies the download checksum, and installs to `~/.local/bin` without sudo. Add that directory to your `PATH` if needed:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Add the same line to your shell's startup file to keep it for future terminals. To choose another installation directory, pass `WMLM_INSTALL_DIR` to `sh`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/minitoolz/with-my-llm/main/install-wmlm.sh | WMLM_INSTALL_DIR="$HOME/bin" sh
+```
+
+Alternatively, build from a checkout of this repository with Rust 1.86 or newer using `cargo install --locked --path .`, and ensure Cargo's bin directory (usually `~/.cargo/bin`) is on `PATH`.
+
+Open the configuration UI:
+
+```sh
 wmlm cfg
 ```
 
@@ -62,17 +81,11 @@ wmlm update --check
 wmlm update
 ```
 
-Updates come from [minitoolz/with-my-llm GitHub Releases](https://github.com/minitoolz/with-my-llm/releases). The updater compares semantic versions and never downgrades or installs prereleases. Linux uses static musl binaries; macOS uses Darwin binaries. Both x86_64 and ARM64 are supported. Selection follows the running binary's architecture, including Intel binaries running under Rosetta.
+Updates come from [minitoolz/with-my-llm GitHub Releases](https://github.com/minitoolz/with-my-llm/releases). Linux and macOS are supported on x86_64 and ARM64. The updater installs newer stable releases only and preserves your configuration and credentials. If an update fails, your existing executable remains available.
 
-The updater downloads the matching archive and its `.sha256` file, verifies SHA-256, and stages the extracted binary beside the current executable before replacing it atomically. Download, checksum, or extraction failures leave the existing executable intact. Configuration and credentials are preserved. The installation directory must be writable; otherwise the command reports an error without attempting privilege escalation. Symlinked launchers update their resolved executable. Package-manager installations should be updated through their package manager.
+The installation directory must be writable. If you installed through a package manager, update through that package manager.
 
-`--check` only reads release metadata and verifies that matching assets are listed; it does not download binaries or change files. A missing release, missing platform asset/checksum, or GitHub rate limit is reported as an error. Updates run only when explicitly requested.
-
-### Publishing releases
-
-Set the version in `Cargo.toml` and update `Cargo.lock`, then push a matching stable tag such as `v0.0.2`. CI validates the tag, runs its checks, and builds all four platform archives. Linux builds are checked for ELF interpreters and shared library dependencies. After all builds succeed, CI uploads the archives and their checksums to a draft GitHub Release and publishes it as latest. An interrupted draft upload can be retried; an already published release is never overwritten.
-
-The updater expects `wmlm-<target>.tar.gz` containing exactly one regular file named `wmlm`, plus `wmlm-<target>.tar.gz.sha256`. The checksum detects corrupted downloads; it is not an independent publisher signature.
+`--check` checks release availability without installing anything. Updates run only when you request them.
 
 ## Configuration
 
@@ -80,17 +93,13 @@ Run `wmlm cfg` to edit backends, agent defaults, credentials, and web-search set
 
 A model supplied with `--model` overrides the agent's saved model, which overrides the backend's default.
 
-Random-port substitution is always enabled when a `{PORT}` placeholder is used. Set **Random port candidates** in the main configuration menu to change the default `1024-65535`. Candidates can be single ports, inclusive ranges, or comma-separated combinations such as `3000, 8000 - 8100, 9000`. Spaces and tabs around `-` are optional and may be repeated. Ports must be between `1` and `65535`; empty entries and reversed ranges are rejected. Duplicate and overlapping candidates are counted once.
+Use `{PORT}` to choose an available local port automatically. For example, pair the backend URL `http://127.0.0.1:{PORT}/v1` with the access command `ssh -N -L {PORT}:localhost:8000 user@host`. The same port is used throughout the session, including reconnection and cleanup.
 
-Use `{PORT}` in a backend URL, API key, access command, or cleanup command to insert the selected port. Matching ignores letter case, so `{port}` and `{PoRT}` also work. For example, combine `http://127.0.0.1:{PORT}/v1` with `ssh -N -L {port}:localhost:8000 user@host`. HTTP Basic credentials and web-search URLs/API keys also support the placeholder. Fixed values continue to work without a placeholder.
+Set **Random port candidates** in `wmlm cfg` to change the default range, `1024-65535`. You can enter individual ports, ranges, or a combination such as `3000, 8000-8100, 9000`. If no candidate is available, the launch stops with an error. This checks ports on your machine, not on the remote server.
 
-Immediately before starting backend access for a launch or connection test, with-my-llm picks a local TCP port that it can open, bind, and listen on. It skips this check when the backend has no `{PORT}` placeholder (unless the launch needs one for its web-search URL or API key). That port stays the same through access-command restarts and cleanup. with-my-llm saves the templates, not the substituted values. Availability checks cover local IPv4 and IPv6 (where supported), releasing the sockets before starting the access command, so another process can still claim the port during startup. Remote port availability is not checked. If no candidate can be opened and listened on, with-my-llm stops before launching the tunnel or coding agent and prints `Unable to assign a port in the port range: ...`. Once the tunnel starts, it owns the selected port; with-my-llm waits for backend readiness before launching the coding agent. In the credential JSON, the setting is `"random_port_candidates": "1024-65535"`; existing configurations use this default automatically.
+Leave both model fields blank to select the first model advertised by your backend. OpenCode and Pi also let you choose from the discovered models during the session. Restart with-my-llm to refresh the available models.
 
-Leave both model fields blank to discover models from the backend's OpenAI-compatible `GET /v1/models` endpoint. All agents initially select the first model returned by the backend. This discovered default does not pin requests to that model. OpenCode and Pi also register the returned models in their session catalogs for model selection.
-
-The bridge also exposes the discovered catalog to clients that request it. Discovery runs after backend access is established, uses the backend's credentials, and caches the list for the session. Restart with-my-llm to refresh it.
-
-If discovery fails or returns no models, with-my-llm reports an error before launching the agent; set `--model MODEL` for servers without a model-list endpoint.
+If discovery fails or returns no models, the agent will not launch. Set `--model MODEL` for servers without a model-list endpoint.
 
 Using a local model through with-my-llm leaves your ordinary Codex model default unchanged. Your existing Codex sessions and skills remain accessible, but model and settings changes made inside a with-my-llm-launched Codex session are discarded on exit. To change your usual Codex defaults, launch Codex directly.
 
@@ -123,9 +132,9 @@ Replace `home-gpu` and the ports with your own connection details. SSH must be i
 
 You can configure a proxy or another access utility the same way. Install and authenticate it beforehand; access commands cannot prompt for input. Commands that only prepare a connection can use **Finish before launching the agent**, with an optional cleanup command to stop any background service they start.
 
-After initial backend readiness, with-my-llm automatically restarts persistent access commands that exit, with a one-second delay between attempts, while keeping the coding agent running. The command and its child processes are stopped when the agent exits. Preparation commands are not restarted just because they finish. A tunnel started separately from with-my-llm is not managed or restarted; configure its command under **Backend access** to enable this recovery.
+with-my-llm automatically reconnects when a managed connection fails and keeps the coding agent running during recovery. An in-flight model request may still fail. When the agent exits, with-my-llm stops the managed connection and its child processes. Separately started tunnels must be managed yourself.
 
-For backends with an access command, with-my-llm also checks the authenticated model-list API every 30 seconds. Checks bypass the cached catalog and require a successful HTTP response containing a nonempty, valid model list; each request times out after 15 seconds. A failed check runs the cleanup command, stops the old access process and its children, then relaunches the access command after a one-second delay. This applies to both command lifecycles and keeps the agent running during recovery. Failed restarts and process-monitoring errors are retried without terminating the agent, and polling resumes after readiness succeeds. Cleanup errors are reported but do not prevent restarting.
+For backends with an access command, with-my-llm also checks the model-list API every 30 seconds and restarts the connection if the check fails.
 
 Set **API health check interval in seconds** in `wmlm cfg`, or set `health_check_interval_secs` in the backend's `access` configuration:
 
@@ -186,3 +195,7 @@ wmlm codex -- -c model_context_window=65536
 - **Connection timeout:** check the backend URL, server availability, and any SSH or proxy command. A reachable port alone does not confirm valid credentials or a loaded model.
 - **Agent stops after a connection loss:** managed access recovery reports `backend access restored` when ready. Agent exits report their exit code or terminating signal; SIGTERM and SIGINT received by with-my-llm are reported separately. The launcher exits when the agent exits; an in-flight model request can fail during recovery. With **Direct** access, restart separately launched tunnels yourself or configure a managed access command.
 - **WebFetch blocked or rejected:** restart with-my-llm after updating it. Website errors such as HTTP 402 or 403 can still prevent fetching even when with-my-llm allows the request.
+
+## Contributing
+
+For development checks, release instructions, and implementation notes, see [CONTRIBUTING.md](CONTRIBUTING.md).
