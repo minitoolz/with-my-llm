@@ -1,5 +1,18 @@
 # Agent instructions
 
+## Required contributor rules
+
+Before making any repository change, read [CONTRIBUTING.md](CONTRIBUTING.md)
+and strictly follow its rules, including
+[Branching and pull requests](CONTRIBUTING.md#branching-and-pull-requests), local
+checks, and documentation audiences. These requirements apply to coding agents
+for every task, including documentation and agent-instruction changes.
+
+`CONTRIBUTING.md` is the source of truth for branching policy. Follow its stated
+exceptions only under their documented conditions; do not invent additional
+exceptions or bypass repository protections. Keep the policy there rather than
+duplicating it in this file.
+
 ## CI checks before committing
 
 Before creating a commit, read `.github/workflows/ci.yml` and run the CI checks
