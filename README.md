@@ -72,6 +72,28 @@ Replace `opencode` with `pi`, `codex`, or `claude` to launch another agent. Forw
 wmlm claude -- --continue
 ```
 
+### Inspecting or bypassing automatic arguments
+
+wmlm normally adds the arguments needed to connect your agent to the selected backend. To see those arguments without launching the agent or connecting to the backend:
+
+```sh
+wmlm opencode -arg
+wmlm opencode -arg -- serve
+```
+
+`-arg` (also `--arg`) prints a JSON array of the automatically added arguments. For OpenCode, it checks the installed CLI's help for `--standalone` support. Other agents use your selected backend configuration; values only known at launch appear as `<bridge-url>`, `<discovered-model>`, or `<temporary-extension>`.
+
+Use `-x` (also `--no-auto-args`) to disable all automatic arguments for one launch:
+
+```sh
+wmlm opencode -x -- serve
+wmlm opencode -arg -x -- serve  # prints []
+```
+
+Put these wmlm options before `--`. Everything after `--` remains an agent argument, including any flags you explicitly supply. `-x` keeps the backend environment configuration, but bypasses OpenCode's help check and automatic `--standalone`. For other agents it also removes automatic model, provider, settings, and extension arguments; you may need to supply those yourself to use the intended backend.
+
+When adding `--standalone`, wmlm warns about known OpenCode conflicts such as `serve`, `service`, `plugin add/remove`, `mcp add`, or `--server`. The warning does not stop execution or remove the argument. Detection is best-effort and depends on argument layout; no warning does not guarantee compatibility with your OpenCode version.
+
 ## Updating
 
 Check for a newer stable release or install it:

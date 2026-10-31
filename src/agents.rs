@@ -117,6 +117,7 @@ fn opencode_session_args(args: &[String], standalone: bool) -> Vec<String> {
 
 /// `base_url` is the bridge origin (e.g. http://127.0.0.1:1234), without /v1.
 /// Credentials here authenticate only to the local bridge, never the upstream.
+#[cfg(test)]
 pub fn prepare(
     agent: &str,
     base_url: &str,
@@ -125,6 +126,29 @@ pub fn prepare(
     args: &[String],
     upstream_protocol: Protocol,
     discovered_models: &[String],
+) -> Result<AgentLaunch> {
+    prepare_with_arguments(
+        agent,
+        base_url,
+        token,
+        model,
+        args,
+        upstream_protocol,
+        discovered_models,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_with_arguments(
+    agent: &str,
+    base_url: &str,
+    token: &str,
+    model: Option<&str>,
+    args: &[String],
+    upstream_protocol: Protocol,
+    discovered_models: &[String],
+    automatic: bool,
 ) -> Result<AgentLaunch> {
     protocol(agent)?;
     let base = base_url.trim_end_matches('/');
@@ -146,6 +170,9 @@ pub fn prepare(
     command.env("WMLM_API_KEY", token);
     match agent {
         "codex" => {
+            if automatic && upstream_protocol != Protocol::Responses {
+                eprintln!("wmlm: protocol conversion disables Codex reasoning and provider-hosted search for this session");
+            }
             let source = std::env::var_os("CODEX_HOME")
                 .filter(|value| !value.is_empty())
                 .map(std::path::PathBuf::from)
@@ -154,8 +181,87 @@ pub fn prepare(
             let home = isolated_codex_home(&source)?;
             command.env("CODEX_HOME", home.path());
             codex_home = Some(home);
+        }
+        "claude" | "claude-code" => {
+            if upstream_protocol != Protocol::Anthropic {
+                eprintln!("wmlm: protocol conversion disables Claude extended thinking and explicit effort for this session");
+                command
+                    .env("MAX_THINKING_TOKENS", "0")
+                    .env("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING", "1")
+                    // Thinking and effort are separate controls. `auto` prevents
+                    // recent Claude Code releases sending output_config.effort.
+                    .env("CLAUDE_CODE_EFFORT_LEVEL", "auto");
+            }
+            command
+                .env("ANTHROPIC_BASE_URL", base)
+                .env("ANTHROPIC_AUTH_TOKEN", token)
+                .env_remove("ANTHROPIC_API_KEY")
+                .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
+                .env_remove("CLAUDE_CODE_USE_BEDROCK")
+                .env_remove("CLAUDE_CODE_USE_VERTEX")
+                .env_remove("CLAUDE_CODE_USE_FOUNDRY");
+            if let Some(model) = selected_model {
+                // Auxiliary requests should use the selected backend model as well.
+                for key in [
+                    "ANTHROPIC_MODEL",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                    "CLAUDE_CODE_SUBAGENT_MODEL",
+                ] {
+                    command.env(key, model);
+                }
+            }
+        }
+        "opencode" => {
+            let config = opencode_config(&api, token, selected_model, &model_ids);
+            command.env("OPENCODE_CONFIG_CONTENT", serde_json::to_string(&config)?);
+        }
+        "pi" => {
+            let mut file = tempfile::Builder::new()
+                .prefix("wmlm-")
+                .suffix(".ts")
+                .tempfile()
+                .context("Creating temporary Pi provider extension")?;
+            let script = pi_extension(base, &api, token, &model_ids);
+            file.write_all(script.as_bytes())?;
+            file.flush()?;
+            extension = Some(file);
+        }
+        _ => unreachable!(),
+    }
+    let extension_path = extension
+        .as_ref()
+        .map(|file| file.path().to_string_lossy().into_owned());
+    if automatic {
+        command.args(automatic_arguments(
+            agent,
+            &api,
+            selected_model,
+            upstream_protocol,
+            extension_path.as_deref(),
+        ));
+    }
+    command.args(args);
+    Ok(AgentLaunch {
+        command,
+        _extension: extension,
+        _codex_home: codex_home,
+    })
+}
+
+/// Shared by preview and launch; placeholders are supplied only by preview.
+pub fn automatic_arguments(
+    agent: &str,
+    api: &str,
+    selected_model: Option<&str>,
+    upstream_protocol: Protocol,
+    extension: Option<&str>,
+) -> Vec<String> {
+    let mut command = Command::new(agent);
+    match agent {
+        "codex" => {
             if upstream_protocol != Protocol::Responses {
-                eprintln!("wmlm: protocol conversion disables Codex reasoning and provider-hosted search for this session");
                 for setting in [
                     "model_reasoning_effort=\"none\"",
                     "model_reasoning_summary=\"none\"",
@@ -191,64 +297,42 @@ pub fn prepare(
                 "--allowedTools",
                 "WebFetch",
             ]);
-            if upstream_protocol != Protocol::Anthropic {
-                eprintln!("wmlm: protocol conversion disables Claude extended thinking and explicit effort for this session");
-                command
-                    .env("MAX_THINKING_TOKENS", "0")
-                    .env("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING", "1")
-                    // Thinking and effort are separate controls. `auto` prevents
-                    // recent Claude Code releases sending output_config.effort.
-                    .env("CLAUDE_CODE_EFFORT_LEVEL", "auto");
-            }
-            command
-                .env("ANTHROPIC_BASE_URL", base)
-                .env("ANTHROPIC_AUTH_TOKEN", token)
-                .env_remove("ANTHROPIC_API_KEY")
-                .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
-                .env_remove("CLAUDE_CODE_USE_BEDROCK")
-                .env_remove("CLAUDE_CODE_USE_VERTEX")
-                .env_remove("CLAUDE_CODE_USE_FOUNDRY");
+
             if let Some(model) = selected_model {
                 command.args(["--model", model]);
-                // Auxiliary requests should use the selected backend model as well.
-                for key in [
-                    "ANTHROPIC_MODEL",
-                    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-                    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-                    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-                    "CLAUDE_CODE_SUBAGENT_MODEL",
-                ] {
-                    command.env(key, model);
-                }
             }
         }
-        "opencode" => {
-            let config = opencode_config(&api, token, selected_model, &model_ids);
-            command.env("OPENCODE_CONFIG_CONTENT", serde_json::to_string(&config)?);
-        }
         "pi" => {
-            let mut file = tempfile::Builder::new()
-                .prefix("wmlm-")
-                .suffix(".ts")
-                .tempfile()
-                .context("Creating temporary Pi provider extension")?;
-            let script = pi_extension(base, &api, token, &model_ids);
-            file.write_all(script.as_bytes())?;
-            file.flush()?;
-            command.arg("--extension").arg(file.path());
+            command.args(["--extension", extension.unwrap_or("<temporary-extension>")]);
             if let Some(model) = selected_model {
                 command.args(["--provider", "wmlm", "--model", model]);
             }
-            extension = Some(file);
         }
-        _ => unreachable!(),
+        _ => (),
     }
-    command.args(args);
-    Ok(AgentLaunch {
-        command,
-        _extension: extension,
-        _codex_home: codex_home,
-    })
+    command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Conservative hints, not an attempt to parse every version of OpenCode's CLI.
+pub fn opencode_argument_warning(args: &[String]) -> bool {
+    let args = &args[..args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len())];
+    matches!(args.first().map(String::as_str), Some("serve" | "service"))
+        || matches!(
+            (
+                args.first().map(String::as_str),
+                args.get(1).map(String::as_str)
+            ),
+            (Some("plugin"), Some("add" | "remove")) | (Some("mcp"), Some("add"))
+        )
+        || args
+            .iter()
+            .any(|arg| arg == "--server" || arg.starts_with("--server="))
 }
 
 fn opencode_config(api: &str, token: &str, model: Option<&str>, model_ids: &[&str]) -> Value {
@@ -343,6 +427,68 @@ fn pi_extension(base: &str, api: &str, token: &str, model_ids: &[&str]) -> Strin
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+    #[test]
+    fn bypass_preserves_user_arguments_and_backend_environment() {
+        let args = ["--standalone", "--", "-arg", "-x"].map(str::to_owned);
+        for agent in ["opencode", "claude", "codex", "pi"] {
+            let launch = prepare_with_arguments(
+                agent,
+                "http://localhost:1234",
+                "secret",
+                Some("model"),
+                &args,
+                Protocol::ChatCompletions,
+                &[],
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                launch.command.get_args().collect::<Vec<_>>(),
+                args.iter().map(std::ffi::OsStr::new).collect::<Vec<_>>()
+            );
+            assert!(launch
+                .command
+                .get_envs()
+                .any(|(key, value)| key == "WMLM_API_KEY"
+                    && value == Some(std::ffi::OsStr::new("secret"))));
+            if agent == "opencode" {
+                assert!(launch.command.get_envs().any(|(key, value)| key
+                    == "OPENCODE_CONFIG_CONTENT"
+                    && value
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .contains("http://localhost:1234/v1")));
+            }
+        }
+    }
+
+    #[test]
+    fn known_opencode_conflicts_are_hints_not_literal_prompt_matches() {
+        for args in [
+            vec!["serve"],
+            vec!["service", "status"],
+            vec!["plugin", "add", "foo"],
+            vec!["plugin", "remove", "foo"],
+            vec!["mcp", "add"],
+            vec!["--server=http://localhost:4096"],
+        ] {
+            assert!(opencode_argument_warning(
+                &args.into_iter().map(str::to_owned).collect::<Vec<_>>()
+            ));
+        }
+        for args in [
+            vec!["-c", "session-id"],
+            vec!["run", "serve"],
+            vec!["run", "--", "--server"],
+            vec!["plugin", "list"],
+        ] {
+            assert!(!opencode_argument_warning(
+                &args.into_iter().map(str::to_owned).collect::<Vec<_>>()
+            ));
+        }
+    }
+
     #[test]
     fn codex_settings_are_private_but_sessions_and_skills_remain_accessible() {
         let original = tempfile::tempdir().unwrap();

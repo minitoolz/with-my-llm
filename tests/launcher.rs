@@ -723,3 +723,82 @@ fn cfg_accepts_config_on_either_side_and_rejects_agent_options() {
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
 }
+
+#[test]
+fn argument_preview_does_not_start_access_or_agent() {
+    for (help, expected) in [("--standalone", "[\"--standalone\"]"), ("old CLI", "[]")] {
+        let (directory, mut command, _listener) = fixture_for_agent(
+            "opencode",
+            &format!("if [ \"$1\" = --help ]; then echo '{help}'; exit 0; fi\nexit 99"),
+            "exit 98",
+            false,
+        );
+        // OpenCode preview needs neither credentials nor a reachable backend.
+        fs::remove_file(directory.path().join("credential.json")).unwrap();
+        let output = command.args(["-arg", "--", "serve"]).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr).contains("warning:"),
+            help == "--standalone"
+        );
+        assert!(!directory.path().join("cleanup").exists());
+    }
+}
+
+#[test]
+fn automatic_arguments_can_be_bypassed_without_probing_opencode() {
+    for disabled in [false, true] {
+        let (directory, mut command, _listener) = fixture_for_agent(
+            "opencode",
+            "if [ \"$1\" = --help ]; then touch \"$PROBE\"; echo --standalone; exit 0; fi\nprintf '%s\\n' \"$@\"\nprintf '%s' \"$OPENCODE_CONFIG_CONTENT\" > \"$CONFIG_CAPTURE\"",
+            "true",
+            false,
+        );
+        command.env("PROBE", directory.path().join("probe"));
+        command.env("CONFIG_CAPTURE", directory.path().join("config-capture"));
+        if disabled {
+            command.arg("-x");
+        }
+        let output = command
+            .args(["--", "serve", "--", "-arg", "-x"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            if disabled {
+                "serve\n--\n-arg\n-x\n"
+            } else {
+                "serve\n--standalone\n--\n-arg\n-x\n"
+            }
+        );
+        assert_eq!(directory.path().join("probe").exists(), !disabled);
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr).contains("warning:"),
+            !disabled
+        );
+        assert!(fs::read_to_string(directory.path().join("config-capture"))
+            .unwrap()
+            .contains("fixture-model"));
+    }
+}
+
+#[test]
+fn disabled_preview_needs_no_agent_or_config() {
+    let output = Command::new(env!("CARGO_BIN_EXE_wmlm"))
+        .args(["opencode", "-arg", "-x"])
+        .env("PATH", "")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "[]");
+}
