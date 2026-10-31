@@ -1,9 +1,12 @@
 mod access;
+mod agent_help;
 mod agent_process;
 mod agents;
 mod bridge;
 mod classifier;
 mod config;
+mod config_cli;
+mod connection_test;
 mod hosted_search;
 mod protocol;
 mod random_port;
@@ -20,6 +23,7 @@ use std::process::ExitCode;
     name = "wmlm",
     version,
     about = "Launch coding agents with your own LLM backend",
+    after_help = "For coding-agent instructions and noninteractive setup examples, run: wmlm agents",
     subcommand_precedence_over_arg = true
 )]
 struct Cli {
@@ -34,6 +38,12 @@ struct Cli {
     /// Override the configured model
     #[arg(long)]
     model: Option<String>,
+    /// Print automatic arguments as a JSON array and exit (-arg also accepted)
+    #[arg(long = "arg")]
+    show_arguments: bool,
+    /// Disable automatic arguments; keep backend environment configuration
+    #[arg(short = 'x', long = "no-auto-args")]
+    no_auto_args: bool,
     /// Installed coding agent: pi, opencode, codex, or claude
     agent: Option<String>,
     /// Arguments forwarded to the coding agent after --
@@ -43,25 +53,64 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum ManagementCommand {
-    /// Open interactive backend and agent configuration
-    Cfg,
+    /// Print instructions and noninteractive setup guidance for coding agents
+    Agents,
+    /// Configure backends and agents (opens the TUI without a subcommand)
+    Cfg(Box<config_cli::Options>),
     /// Update wmlm from the latest stable GitHub release
     Update(update::Options),
 }
 
+// Clap short flags are single characters; support the requested -arg spelling
+// only on wmlm's side of the separator, leaving forwarded arguments untouched.
+fn normalize_arguments(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Vec<std::ffi::OsString> {
+    let mut forwarded = false;
+    let mut value = false;
+    args.into_iter()
+        .map(|arg| {
+            if forwarded {
+                return arg;
+            }
+            if value {
+                value = false;
+                return arg;
+            }
+            if arg == "--" || arg == "cfg" {
+                forwarded = true;
+            }
+            if arg == "--config" || arg == "--backend" || arg == "--model" {
+                value = true;
+            }
+            if arg == "-arg" {
+                "--arg".into()
+            } else {
+                arg
+            }
+        })
+        .collect()
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let mut args = normalize_arguments(std::env::args_os());
+    if args.len() == 1 {
+        args.push("--help".into());
+    }
+    let cli = Cli::parse_from(args);
     if cli.command.is_some()
         && (cli.agent.is_some()
             || cli.backend.is_some()
             || cli.model.is_some()
+            || cli.show_arguments
+            || cli.no_auto_args
             || !cli.args.is_empty())
     {
         Cli::command()
             .error(
                 clap::error::ErrorKind::ArgumentConflict,
-                "cfg and update cannot be combined with agent launch arguments",
+                "management commands cannot be combined with agent launch arguments",
             )
             .exit();
     }
@@ -76,8 +125,13 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<u8> {
     match cli.command {
-        Some(ManagementCommand::Cfg) => {
-            tui::run(cli.config.as_deref()).await?;
+        Some(ManagementCommand::Agents) => {
+            println!("wmlm {}\n", env!("CARGO_PKG_VERSION"));
+            print!("{}", agent_help::INSTRUCTIONS);
+            return Ok(0);
+        }
+        Some(ManagementCommand::Cfg(options)) => {
+            config_cli::run(*options, cli.config.as_deref()).await?;
             return Ok(0);
         }
         Some(ManagementCommand::Update(options)) => {
@@ -95,6 +149,25 @@ async fn run(cli: Cli) -> Result<u8> {
         agent
     };
     agents::protocol(&agent)?;
+    let args = if agent == "opencode" && !cli.no_auto_args {
+        let args = agents::opencode_args(&cli.args).await?;
+        if args != cli.args && agents::opencode_argument_warning(&cli.args) {
+            eprintln!("wmlm: warning: automatically added --standalone may be rejected or conflict with this OpenCode command; use wmlm opencode -x -- ... to disable automatic arguments, or -arg to inspect them");
+        }
+        args
+    } else {
+        cli.args.clone()
+    };
+    if cli.show_arguments && (agent == "opencode" || cli.no_auto_args) {
+        let added: Vec<&str> = if args != cli.args {
+            vec!["--standalone"]
+        } else {
+            vec![]
+        };
+        println!("{}", serde_json::to_string(&added)?);
+        return Ok(0);
+    }
+
     let config = match cli.config {
         Some(path) => config::Config::load_from(&path)?,
         None => config::Config::load()?,
@@ -121,6 +194,17 @@ async fn run(cli: Cli) -> Result<u8> {
         .or(backend.model.as_deref())
         .filter(|m| !m.is_empty())
         .map(str::to_owned);
+    if cli.show_arguments {
+        let added = agents::automatic_arguments(
+            &agent,
+            "<bridge-url>/v1",
+            Some(model.as_deref().unwrap_or("<discovered-model>")),
+            backend.protocol,
+            None,
+        );
+        println!("{}", serde_json::to_string(&added)?);
+        return Ok(0);
+    }
     // Install signal handlers before any access command is started.
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
@@ -135,7 +219,8 @@ async fn run(cli: Cli) -> Result<u8> {
     let mut access = access::AccessSession::new(backend.access.clone());
     let result = launch(
         &agent,
-        &cli.args,
+        &args,
+        !cli.no_auto_args,
         backend,
         model,
         search,
@@ -147,9 +232,11 @@ async fn run(cli: Cli) -> Result<u8> {
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn launch(
     agent: &str,
     args: &[String],
+    automatic: bool,
     backend: config::Backend,
     model: Option<String>,
     search: config::SearchProvider,
@@ -177,19 +264,15 @@ async fn launch(
     } else {
         Vec::new()
     };
-    let args = if agent == "opencode" {
-        agents::opencode_args(args).await?
-    } else {
-        args.to_vec()
-    };
-    let mut launch = agents::prepare(
+    let mut launch = agents::prepare_with_arguments(
         agent,
         &bridge.base_url,
         &bridge.token,
         model.as_deref(),
-        &args,
+        args,
         upstream_protocol,
         &discovered_models,
+        automatic,
     )?;
     let mut child =
         agent_process::AgentProcess::spawn(launch.take_command()).with_context(|| {
@@ -226,13 +309,54 @@ mod cli_tests {
     use super::*;
 
     #[test]
+    fn automatic_argument_controls_respect_the_separator_and_option_values() {
+        for args in [
+            vec![
+                "wmlm",
+                "opencode",
+                "-arg",
+                "-x",
+                "--",
+                "-arg",
+                "-x",
+                "-c",
+                "session-id",
+            ],
+            vec![
+                "wmlm",
+                "--arg",
+                "--no-auto-args",
+                "opencode",
+                "--",
+                "-arg",
+                "-x",
+                "-c",
+                "session-id",
+            ],
+        ] {
+            let cli =
+                Cli::try_parse_from(normalize_arguments(args.into_iter().map(Into::into))).unwrap();
+            assert!(cli.show_arguments);
+            assert!(cli.no_auto_args);
+            assert_eq!(cli.args, ["-arg", "-x", "-c", "session-id"]);
+        }
+        let args = normalize_arguments(
+            ["wmlm", "--config", "-arg", "opencode", "-arg"]
+                .into_iter()
+                .map(Into::into),
+        );
+        assert_eq!(args[2], "-arg");
+        assert_eq!(args[4], "--arg");
+    }
+
+    #[test]
     fn config_path_is_global_and_forwarded_agent_arguments_stay_literal() {
         for args in [
             vec!["wmlm", "--config", "settings.json", "cfg"],
             vec!["wmlm", "cfg", "--config", "settings.json"],
         ] {
             let cli = Cli::try_parse_from(args).unwrap();
-            assert!(matches!(cli.command, Some(ManagementCommand::Cfg)));
+            assert!(matches!(cli.command, Some(ManagementCommand::Cfg(_))));
             assert_eq!(
                 cli.config.unwrap(),
                 std::path::PathBuf::from("settings.json")
