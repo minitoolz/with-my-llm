@@ -1,6 +1,7 @@
 use crate::config::{
     config_path, Access, AgentBinding, Auth, Backend, Config, Protocol, SearchProvider,
 };
+use crate::connection_test::test_connection;
 use anyhow::Result;
 use dialoguer::console::{measure_text_width, Key, Term};
 use dialoguer::theme::Theme;
@@ -320,35 +321,6 @@ async fn edit_backend(existing: Option<&Backend>, candidates: &str) -> Result<Ba
         println!();
     }
     Ok(backend)
-}
-
-// Use the same access lifecycle and authenticated discovery as an agent launch.
-// Passing no override ensures even an explicitly configured model is tested remotely.
-async fn test_connection(backend: &Backend, candidates: &str) -> Result<Vec<String>> {
-    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let backend = if backend.uses_random_port() {
-        backend.with_port(crate::random_port::choose(candidates)?)
-    } else {
-        backend.clone()
-    };
-    let mut access = crate::access::AccessSession::new(backend.access.clone());
-    let result = tokio::select! {
-        result = async {
-            access.start(&backend.url).await?;
-            let bridge = crate::bridge::Bridge::start_with_search(
-                backend.clone(), None, SearchProvider::default(),
-            ).await?;
-            tokio::select! {
-                result = bridge.model_ids() => result,
-                never = access.supervise(&bridge) => match never {},
-            }
-        } => result,
-        _ = interrupt.recv() => Err(anyhow::anyhow!("connection test interrupted")),
-        _ = terminate.recv() => Err(anyhow::anyhow!("connection test terminated")),
-    };
-    access.cleanup().await;
-    result
 }
 
 fn masked_key(value: &str) -> String {
