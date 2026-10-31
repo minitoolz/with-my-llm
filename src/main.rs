@@ -1,4 +1,5 @@
 mod access;
+mod agent_help;
 mod agent_process;
 mod agents;
 mod bridge;
@@ -22,6 +23,7 @@ use std::process::ExitCode;
     name = "wmlm",
     version,
     about = "Launch coding agents with your own LLM backend",
+    after_help = "For coding-agent instructions and noninteractive setup examples, run: wmlm agents",
     subcommand_precedence_over_arg = true
 )]
 struct Cli {
@@ -51,6 +53,8 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum ManagementCommand {
+    /// Print instructions and noninteractive setup guidance for coding agents
+    Agents,
     /// Configure backends and agents (opens the TUI without a subcommand)
     Cfg(Box<config_cli::Options>),
     /// Update wmlm from the latest stable GitHub release
@@ -90,7 +94,11 @@ fn normalize_arguments(
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = Cli::parse_from(normalize_arguments(std::env::args_os()));
+    let mut args = normalize_arguments(std::env::args_os());
+    if args.len() == 1 {
+        args.push("--help".into());
+    }
+    let cli = Cli::parse_from(args);
     if cli.command.is_some()
         && (cli.agent.is_some()
             || cli.backend.is_some()
@@ -102,7 +110,7 @@ async fn main() -> ExitCode {
         Cli::command()
             .error(
                 clap::error::ErrorKind::ArgumentConflict,
-                "cfg and update cannot be combined with agent launch arguments",
+                "management commands cannot be combined with agent launch arguments",
             )
             .exit();
     }
@@ -117,6 +125,11 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<u8> {
     match cli.command {
+        Some(ManagementCommand::Agents) => {
+            println!("wmlm {}\n", env!("CARGO_PKG_VERSION"));
+            print!("{}", agent_help::INSTRUCTIONS);
+            return Ok(0);
+        }
         Some(ManagementCommand::Cfg(options)) => {
             config_cli::run(*options, cli.config.as_deref()).await?;
             return Ok(0);

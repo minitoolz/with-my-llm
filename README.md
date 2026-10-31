@@ -19,7 +19,7 @@ Codex and Claude Code integrations are still under development; some tools and w
 
 `local` and `home-gpu` are example backend names you create in the configuration UI. Launch with-my-llm from the project directory you want to work in.
 
-The command-line executable is named `wmlm` (with my LLM).
+The command-line executable is named `wmlm` (with my LLM). Run `wmlm` or `wmlm --help` for usage. `wmlm agents` prints the built-in help for coding agents.
 
 ## Quick start
 

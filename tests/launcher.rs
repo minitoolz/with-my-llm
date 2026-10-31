@@ -802,3 +802,59 @@ fn disabled_preview_needs_no_agent_or_config() {
     assert!(output.status.success());
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "[]");
 }
+
+#[test]
+fn bare_invocation_is_identical_to_help_without_configuration() {
+    let directory = tempfile::tempdir().unwrap();
+    let invoke = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_wmlm"))
+            .args(args)
+            .env("HOME", directory.path())
+            .env("PATH", "")
+            .output()
+            .unwrap()
+    };
+    let bare = invoke(&[]);
+    let help = invoke(&["--help"]);
+    assert!(bare.status.success());
+    assert_eq!(bare.status.code(), help.status.code());
+    assert_eq!(bare.stdout, help.stdout);
+    assert_eq!(bare.stderr, help.stderr);
+    let text = String::from_utf8(bare.stdout).unwrap();
+    assert!(text.contains("wmlm agents"));
+    assert!(text.contains("coding-agent instructions"));
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn agent_instructions_do_not_read_config_or_accept_launch_options() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("invalid.json");
+    std::fs::write(&config, "invalid configuration; must not be read").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_wmlm"))
+        .args(["agents", "--config"])
+        .arg(&config)
+        .env("PATH", "")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let instructions = String::from_utf8(output.stdout).unwrap();
+    assert!(instructions.contains("Instructions for coding agents"));
+    assert!(instructions.contains("wmlm cfg show"));
+    assert!(instructions.contains("wmlm cfg backend test"));
+    assert!(instructions.contains("tsh ssh"));
+    assert!(instructions.contains("--persistent true"));
+    for args in [
+        vec!["--backend", "local", "agents"],
+        vec!["-x", "agents"],
+        vec!["-arg", "agents"],
+        vec!["agents", "--", "serve"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_wmlm"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+    }
+}
