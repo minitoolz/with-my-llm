@@ -4,6 +4,8 @@ mod agents;
 mod bridge;
 mod classifier;
 mod config;
+mod config_cli;
+mod connection_test;
 mod hosted_search;
 mod protocol;
 mod random_port;
@@ -49,8 +51,8 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum ManagementCommand {
-    /// Open interactive backend and agent configuration
-    Cfg,
+    /// Configure backends and agents (opens the TUI without a subcommand)
+    Cfg(Box<config_cli::Options>),
     /// Update wmlm from the latest stable GitHub release
     Update(update::Options),
 }
@@ -71,7 +73,7 @@ fn normalize_arguments(
                 value = false;
                 return arg;
             }
-            if arg == "--" {
+            if arg == "--" || arg == "cfg" {
                 forwarded = true;
             }
             if arg == "--config" || arg == "--backend" || arg == "--model" {
@@ -115,8 +117,8 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<u8> {
     match cli.command {
-        Some(ManagementCommand::Cfg) => {
-            tui::run(cli.config.as_deref()).await?;
+        Some(ManagementCommand::Cfg(options)) => {
+            config_cli::run(*options, cli.config.as_deref()).await?;
             return Ok(0);
         }
         Some(ManagementCommand::Update(options)) => {
@@ -341,7 +343,7 @@ mod cli_tests {
             vec!["wmlm", "cfg", "--config", "settings.json"],
         ] {
             let cli = Cli::try_parse_from(args).unwrap();
-            assert!(matches!(cli.command, Some(ManagementCommand::Cfg)));
+            assert!(matches!(cli.command, Some(ManagementCommand::Cfg(_))));
             assert_eq!(
                 cli.config.unwrap(),
                 std::path::PathBuf::from("settings.json")

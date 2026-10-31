@@ -113,6 +113,58 @@ The installation directory must be writable. If you installed through a package 
 
 Run `wmlm cfg` to edit backends, agent defaults, credentials, and web-search settings. After adding or editing a backend, you can test the connection before it is saved. The test starts any configured access command, requests the authenticated model list, displays available models, and cleans up the access session. It does not generate a completion. A failed test reports the error but still saves your settings so you can edit them later.
 
+### Configure from the command line
+
+Run `wmlm cfg` to open the TUI, or use its subcommands without an interactive terminal. `wmlm cfg --help` lists the commands, and each command has its own `--help`. `--config PATH` works at any level.
+
+```sh
+wmlm cfg show
+wmlm cfg backend add local --url http://localhost:8000/v1 --protocol chat_completions
+wmlm cfg backend edit local --model my-model
+wmlm cfg bind opencode local
+wmlm cfg bind claude local --model another-model
+wmlm cfg ports '3000, 8000-8010'
+wmlm cfg backend test local
+```
+
+`show` prints JSON with authentication credentials and search API keys redacted. Use `show --show-secrets` only when you need the actual values. Access and cleanup command strings are displayed as saved, so avoid embedding credentials in them. Changes print a JSON `saved` path; connection tests print the backend name and model list. Access-command output and errors go to stderr; errors return a nonzero exit status.
+
+Backend protocols are `chat_completions`, `responses`, and `anthropic`. Adding a backend requires `--url` and `--protocol`; editing preserves every omitted field, including credentials. Use `--clear-model` for model discovery, `--clear-auth` to remove authentication, or `--direct` to remove the access command. `cfg bind` without `--model` uses the backend default. `cfg unbind AGENT` removes a binding; `cfg backend delete NAME` deletes that backend and all its agent bindings.
+
+To configure authentication, pass `--auth-file PATH` to `backend add` or `backend edit`. The file contains one of these JSON objects (replace the example values); `--auth-file -` reads it from stdin:
+
+```json
+{"type":"bearer","token":"YOUR_TOKEN"}
+```
+
+```json
+{"type":"basic","username":"YOUR_USERNAME","password":"YOUR_PASSWORD"}
+```
+
+Configure an SSH tunnel or another access command with the same controls available in the TUI:
+
+```sh
+wmlm cfg backend edit remote \
+  --access-command 'ssh -N -L 18000:localhost:8000 gpu-host' \
+  --persistent true --timeout-secs 30 --health-check-interval-secs 30
+wmlm cfg backend edit remote --cleanup 'your-cleanup-command'
+wmlm cfg backend edit remote --clear-cleanup
+```
+
+New access commands default to preparation-only (`--persistent false`), a 30-second readiness timeout, and a 30-second health check interval. Set the interval to `0` to disable health checks. Editing an existing command preserves its other settings. Saving does not run the command or contact the backend; `cfg backend test NAME` explicitly tests the saved configuration and runs its access/cleanup commands. A failed test leaves settings unchanged.
+
+Select web search with one of:
+
+```sh
+wmlm cfg web-search public
+wmlm cfg web-search searxng --url http://localhost:8080
+wmlm cfg web-search brave --api-key-file /path/to/brave-key
+```
+
+The Brave key file is plain text; `-` reads stdin. One trailing line ending is removed. Omit `--api-key-file` to retain an already configured Brave key.
+
+### Configuration defaults
+
 A model supplied with `--model` overrides the agent's saved model, which overrides the backend's default.
 
 Use `{PORT}` to choose an available local port automatically. For example, pair the backend URL `http://127.0.0.1:{PORT}/v1` with the access command `ssh -N -L {PORT}:localhost:8000 user@host`. The same port is used throughout the session, including reconnection and cleanup.

@@ -15,6 +15,7 @@ pub struct AccessSession {
     started: bool,
     recovering: bool,
     backend_url: String,
+    output_to_stderr: bool,
 }
 
 impl AccessSession {
@@ -26,7 +27,14 @@ impl AccessSession {
             started: false,
             recovering: false,
             backend_url: String::new(),
+            output_to_stderr: false,
         }
+    }
+
+    /// Keep machine-readable stdout separate from access and cleanup logs.
+    pub fn with_output_to_stderr(mut self) -> Self {
+        self.output_to_stderr = true;
+        self
     }
 
     pub async fn start(&mut self, backend_url: &str) -> Result<()> {
@@ -35,7 +43,7 @@ impl AccessSession {
         };
         self.backend_url = backend_url.to_owned();
         self.process = Some(
-            shell(&config.command)
+            shell(&config.command, self.output_to_stderr)
                 .spawn()
                 .context("starting backend access command")?,
         );
@@ -163,7 +171,7 @@ impl AccessSession {
             .and_then(|c| c.cleanup.as_deref())
             .filter(|s| !s.trim().is_empty())
         {
-            match shell(command).spawn() {
+            match shell(command, self.output_to_stderr).spawn() {
                 Ok(mut child) => {
                     let mut guard = ProcessGroupGuard(child.id().map(|id| id as i32));
                     let group = guard.0;
@@ -221,7 +229,7 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
-fn shell(script: &str) -> Command {
+fn shell(script: &str, output_to_stderr: bool) -> Command {
     let mut command = Command::new("/bin/sh");
     command
         .arg("-c")
@@ -230,6 +238,9 @@ fn shell(script: &str) -> Command {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
+    if output_to_stderr {
+        command.stdout(std::io::stderr());
+    }
     command.as_std_mut().process_group(0);
     command
 }
